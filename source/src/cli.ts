@@ -2,6 +2,8 @@
 import "dotenv/config";
 import { Command } from "commander";
 import { authCheck, authCommand } from "./commands/auth.js";
+import { enrichCommand } from "./commands/enrich.js";
+import { infoCommand } from "./commands/info.js";
 import { listCommand } from "./commands/list.js";
 import { statusCommand } from "./commands/status.js";
 import { syncCommand } from "./commands/sync.js";
@@ -42,6 +44,25 @@ program
   });
 
 program
+  .command("enrich")
+  .description("Fetch per-repo extras from GitHub (languages, releases, branches, README…)")
+  .argument("[repos...]", 'repos to enrich, e.g. "owner/name" or "name" (default: all stale)')
+  .option("--force", "refetch even if the stored data is still fresh")
+  .action(async (repos: string[], opts: { force?: boolean }) => {
+    await enrichCommand(repos, opts);
+  });
+
+program
+  .command("info")
+  .description("Show everything strappy knows about one repo")
+  .argument("<repo>", '"owner/name" or "name"')
+  .option("--json", "machine-readable output (README elided unless --full)")
+  .option("--full", "with --json, include the raw API object and full README")
+  .action(async (repo: string, opts: { json?: boolean; full?: boolean }) => {
+    await infoCommand(repo, opts);
+  });
+
+program
   .command("status")
   .description("Show backup health")
   .option("--oneline", "single machine-readable line for prompts/scripts")
@@ -53,7 +74,7 @@ program
 // now, surface status and point at the available commands.
 program.action(async () => {
   await statusCommand({});
-  console.log("\nCommands: auth · sync · list · status   (try `strappy --help`)");
+  console.log("\nCommands: auth · sync · enrich · list · info · status   (try `strappy --help`)");
 });
 
 program.parseAsync(process.argv).catch((err: unknown) => {

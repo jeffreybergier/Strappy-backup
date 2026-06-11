@@ -105,7 +105,8 @@ function reconcileInventory(
       renamed.push({ from: prior.fullName, to: repo.fullName });
     }
 
-    const current = state.repos[repo.fullName];
+    // After a rename `prior` (matched by githubId) holds the history to carry.
+    const current = state.repos[repo.fullName] ?? prior;
     state.repos[repo.fullName] = {
       githubId: repo.githubId,
       fullName: repo.fullName,
@@ -117,6 +118,9 @@ function reconcileInventory(
       lastSyncOk: current?.lastSyncOk ?? null,
       lastError: current?.lastError ?? null,
       sizeKb: current?.sizeKb ?? null,
+      metadata: repo.metadata,
+      raw: repo.raw,
+      enrichment: current?.enrichment ?? null,
     };
   }
 

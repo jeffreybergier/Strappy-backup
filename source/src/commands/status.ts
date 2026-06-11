@@ -1,8 +1,8 @@
 import { resolveToken } from "../auth.js";
 import { loadConfig } from "../config.js";
+import { openStore } from "../db.js";
 import { humanSize, timeAgo } from "../format.js";
 import { getPaths } from "../paths.js";
-import { JsonStore } from "../state.js";
 
 export interface StatusOptions {
   /** Emit a single machine-readable line (for shell prompts / scripts). */
@@ -12,7 +12,7 @@ export interface StatusOptions {
 export async function statusCommand(opts: StatusOptions): Promise<void> {
   const paths = getPaths();
   const config = await loadConfig(paths);
-  const store = new JsonStore(paths);
+  const store = openStore(paths);
   const state = await store.read();
   const resolved = await resolveToken(paths);
 

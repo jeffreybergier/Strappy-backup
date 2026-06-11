@@ -1,9 +1,9 @@
 import { resolveToken } from "../auth.js";
 import { loadConfig } from "../config.js";
 import { humanSize } from "../format.js";
+import { openStore } from "../db.js";
 import { Logger } from "../logger.js";
 import { getPaths } from "../paths.js";
-import { JsonStore } from "../state.js";
 import { sync } from "../sync.js";
 
 export async function syncCommand(repos: string[]): Promise<void> {
@@ -18,7 +18,7 @@ export async function syncCommand(repos: string[]): Promise<void> {
     );
   }
 
-  const store = new JsonStore(paths);
+  const store = openStore(paths);
   const summary = await sync({
     store,
     paths,

@@ -12,6 +12,8 @@ export interface StrappyConfig {
   concurrency: number;
   /** A mirror is considered "stale" once it is older than this many minutes. */
   freshnessMinutes: number;
+  /** `strappy enrich` refetches a repo's Tier-2 metadata once it's older than this. */
+  enrichmentMaxAgeDays: number;
 }
 
 export const DEFAULT_CONFIG: StrappyConfig = {
@@ -20,6 +22,7 @@ export const DEFAULT_CONFIG: StrappyConfig = {
   schedule: "0 */6 * * *",
   concurrency: 4,
   freshnessMinutes: 6 * 60,
+  enrichmentMaxAgeDays: 7,
 };
 
 /** Load config.json, filling any missing keys from defaults. Creates the file if absent. */

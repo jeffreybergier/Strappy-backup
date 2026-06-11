@@ -15,8 +15,19 @@ backup is real once you've run a sync.
 - Detects **renames/transfers** (via the stable GitHub repo id) and moves the mirror.
 - Flags repos that disappeared from GitHub as **orphaned** — and never deletes a
   mirror automatically.
-- Records everything in `state.json`, guarded by a lock so a manual sync and the
-  (future) daemon can't collide.
+- Captures **rich metadata** for every repo so future tooling (and the planned
+  pi agent, plan §5) has something to reason over:
+  - *Tier 1* (free with every `sync`): description, topics, language, license,
+    stars/forks/watchers, created/updated/pushed timestamps, visibility,
+    archived/fork/template flags, permissions — plus the **verbatim GitHub API
+    object** as a hedge.
+  - *Tier 2* (`strappy enrich`, ~8 API calls per repo): language byte
+    breakdown, latest release, latest commit, branches, tags, contributors,
+    true open-PR count, and the README itself. Refreshed only when older than
+    `enrichmentMaxAgeDays` (config, default 7).
+- Records everything in `strappy.db` (SQLite via better-sqlite3, queryable with
+  plain SQL), guarded by a lock so a manual sync and the (future) daemon can't
+  collide. A pre-existing `state.json` is imported automatically on first run.
 - The GitHub token is resolved from env / `secrets/github-token` / `gh` and is
   **never written into a mirror's git config**.
 
@@ -46,8 +57,12 @@ Run with `npm run strappy -- <args>` (dev), or `npm run build && strappy <args>`
 
 ```bash
 npm run strappy -- auth --check        # which token would be used?
-npm run strappy -- sync                # mirror everything
+npm run strappy -- sync                # mirror everything (+ Tier-1 metadata)
 npm run strappy -- sync owner/repo     # mirror just one
+npm run strappy -- enrich              # fetch Tier-2 metadata where stale
+npm run strappy -- enrich owner/repo --force   # refetch one repo now
+npm run strappy -- info owner/repo     # everything strappy knows about a repo
+npm run strappy -- info repo --json    # agent-friendly JSON (--full adds raw + README)
 npm run strappy -- list                # list mirrors
 npm run strappy -- list --stale        # only stale mirrors
 npm run strappy -- list --orphaned     # repos gone from GitHub

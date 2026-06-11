@@ -1,7 +1,8 @@
 import { loadConfig } from "../config.js";
+import { openStore } from "../db.js";
 import { humanSize, timeAgo } from "../format.js";
 import { getPaths } from "../paths.js";
-import { JsonStore, type RepoRecord } from "../state.js";
+import type { RepoRecord } from "../state.js";
 
 export interface ListOptions {
   stale?: boolean;
@@ -11,7 +12,7 @@ export interface ListOptions {
 export async function listCommand(opts: ListOptions): Promise<void> {
   const paths = getPaths();
   const config = await loadConfig(paths);
-  const store = new JsonStore(paths);
+  const store = openStore(paths);
   const state = await store.read();
 
   let records = Object.values(state.repos).sort((a, b) => a.fullName.localeCompare(b.fullName));

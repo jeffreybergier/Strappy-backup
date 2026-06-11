@@ -5,7 +5,12 @@ import path from "node:path";
 export interface Paths {
   home: string;
   config: string;
+  /** Legacy JSON state file — imported into the db once, then renamed. */
   state: string;
+  /** SQLite database holding inventory, metadata, and checkout registry. */
+  db: string;
+  /** Lock target guarding long transactions (sync/enrich vs daemon). */
+  dbLock: string;
   secrets: string;
   tokenFile: string;
   mirrors: string;
@@ -30,6 +35,8 @@ export function getPaths(home: string = resolveHome()): Paths {
     home,
     config: path.join(home, "config.json"),
     state: path.join(home, "state.json"),
+    db: path.join(home, "strappy.db"),
+    dbLock: path.join(home, "strappy.db.lock"),
     secrets: path.join(home, "secrets"),
     tokenFile: path.join(home, "secrets", "github-token"),
     mirrors: path.join(home, "mirrors"),
