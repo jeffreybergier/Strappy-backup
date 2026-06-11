@@ -1,0 +1,34 @@
+{
+  "name": "strappy-backup",
+  "version": "0.1.0",
+  "description": "Keep durable bare mirrors of all your GitHub repos and hand out ephemeral working copies.",
+  "type": "module",
+  "bin": {
+    "strappy": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "strappy": "tsx src/cli.ts",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.2.1",
+    "commander": "^13.0.0",
+    "dotenv": "^16.4.7",
+    "execa": "^9.5.2",
+    "octokit": "^4.0.2",
+    "p-limit": "^6.2.0",
+    "proper-lockfile": "^4.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/proper-lockfile": "^4.1.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
