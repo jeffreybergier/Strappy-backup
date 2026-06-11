@@ -1,0 +1,38 @@
+services:
+  altivec-intelligence:
+    image: ghcr.io/jeffreybergier/altivec-intelligence:latest
+    stdin_open: true
+    tty: true
+    environment:
+      - IS_SANDBOX=1
+    volumes:
+      - ~/.strappy:/root
+      - ./source:/repo/source
+      - ./backups:/repo/backups
+    working_dir: /repo/source
+    entrypoint: /bin/bash
+    command: -lc "altivec-chooser"
+
+  shell:
+    image: ghcr.io/jeffreybergier/altivec-intelligence:latest
+    volumes:
+      - ~/.strappy:/root
+      - ./source:/repo/source
+      - ./backups:/repo/backups
+    working_dir: /repo/source
+
+  # The strappy-backup CLI. Run one-off commands with:
+  #   docker compose run --rm strappy sync
+  #   docker compose run --rm strappy list --stale
+  #   docker compose run --rm strappy status
+  #   docker compose run --rm strappy auth        # interactive token prompt
+  # Anything after "strappy" is forwarded straight to the CLI.
+  strappy:
+    image: ghcr.io/jeffreybergier/altivec-intelligence:latest
+    volumes:
+      - ~/.strappy:/root
+      - ./source:/repo/source
+      - ./backups:/repo/backups
+    working_dir: /repo/source
+    entrypoint: /bin/bash -lc 'npm install --no-fund --no-audit && exec npm run --silent strappy -- "$@"' bash
+    command: status
