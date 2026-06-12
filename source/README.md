@@ -31,8 +31,8 @@ first-pass TUI, and direct GitHub-origin checkout management.
 - The GitHub token is resolved from env / `secrets/github-token` / `gh` and is
   **never written into a mirror's git config**.
 
-Also present now: a first-pass interactive TUI shell for the dashboard, repo
-search/actions, real checkout workflows, audit placeholder, and
+Also present now: a first-pass interactive TUI shell for the dashboard,
+checkout-oriented repo search/actions, real checkout workflows, audit placeholder, and
 settings, plus a repo-local Codex skill at `skills/strappy-fleet` for AI-assisted
 SQLite/CLI workflows. The daemon, audits, repo profiles, and deeper AI
 integration are still future work. Relay push is intentionally not part of the current checkout flow:

@@ -320,7 +320,7 @@ fleet dashboard.
 ```
  STRAPPY  /repo/checkouts   sync 2h ago   128 repos   7 checkouts   2 dirty   5 findings
  ─────────────────────────────────────────────────────────────────────────────
-  Dashboard   Repos   Checkouts   Audits   Settings
+  Dashboard   Checkouts   Audits   Settings
 
   Needs Attention
   danger  2 checkouts have local commits not in mirrors
@@ -343,12 +343,11 @@ Use tabs or a left rail:
 | View | Purpose | Primary actions |
 | --- | --- | --- |
 | Dashboard | Fleet health summary. | Sync now, scan checkouts, run audit. |
-| Repos | Search/browse all mirrors and metadata. | Checkout, sync one, enrich, profile, info. |
-| Checkouts | Manage `/repo/checkouts`. | Open path, scan, cleanup safe, force cleanup. |
+| Checkouts | Manage `/repo/checkouts` and search repos before checkout. | Search repo, show info, sync one, enrich, create checkout, scan, cleanup safe, force cleanup. |
 | Audits | Findings by repo/category/severity. | Refresh, dismiss, copy remediation, open GitHub URL. |
 | Settings | Auth, owners, schedules, checkout root, scopes. | Check token, edit config, test GitHub scopes. |
 
-### Repo List
+### Checkout Repo Search
 
 Columns:
 
@@ -487,7 +486,7 @@ strappy status [--oneline]
    list, status, SQLite store.
 2. **M2 - Checkout manager (done):** checkout into `/repo/checkouts`, scan dirty/unpushed
    state, list checkouts, cleanup safe checkouts.
-3. **M3 - TUI checkout workflows (done):** dashboard, repo search, checkout actions, sync/enrich
+3. **M3 - TUI checkout workflows (done):** dashboard, checkout repo search, checkout actions, sync/enrich
    actions using `@inquirer/prompts`.
 4. **M4 - Audit engine:** branch protection, collaborators, Actions, security,
    hygiene findings stored in SQLite.

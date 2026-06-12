@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import * as readline from "node:readline";
 import { confirm, input, search, select } from "@inquirer/prompts";
 import { resolveToken } from "./auth.js";
 import {
@@ -23,7 +24,6 @@ import type { CheckoutRecord, RepoRecord, StrappyState } from "./state.js";
 
 type MainAction =
   | "dashboard"
-  | "repos"
   | "sync"
   | "enrich"
   | "checkouts"
@@ -37,12 +37,11 @@ type RepoAction =
   | "sync"
   | "enrich"
   | "github"
-  | "search"
-  | "main";
+  | "checkout";
 
-type SettingsAction = "auth" | "status" | "back";
-type CheckoutsAction = "create" | "select" | "scan" | "cleanup" | "back";
-type CheckoutDetailAction = "scan" | "cleanup" | "forceCleanup" | "path" | "back";
+type SettingsAction = "auth" | "status";
+type CheckoutsAction = "create" | "select" | "scan" | "cleanup";
+type CheckoutDetailAction = "scan" | "cleanup" | "forceCleanup" | "path";
 
 interface Choice<Value> {
   value: Value;
@@ -60,30 +59,44 @@ interface TuiContext {
   tokenSource: string | null;
 }
 
+const ESCAPE_ABORT_REASON = "strappy:escape-back";
+const BACK_INSTRUCTIONS = {
+  navigation: "↑↓ navigate • ⏎ select • ␛ back",
+  pager: "↑↓ navigate • ⏎ select • ␛ back",
+};
+
+class BackSignal extends Error {
+  override name = "BackSignal";
+}
+
 export async function runTui(): Promise<void> {
   try {
     await ensureCheckoutRoot();
     await showDashboard();
 
     while (true) {
-      const action = await select<MainAction>({
-        message: "Strappy",
-        pageSize: 10,
-        choices: [
-          { value: "dashboard", name: "Dashboard", description: "Fleet health summary" },
-          { value: "repos", name: "Repos", description: "Search mirrors and run repo actions" },
-          { value: "sync", name: "Sync now", description: "Refresh GitHub inventory and mirrors" },
-          { value: "enrich", name: "Enrich stale repos", description: "Fetch languages, branches, releases, README" },
-          { value: "checkouts", name: "Checkouts", description: "Create, scan, and cleanup working copies" },
-          { value: "audits", name: "Audits", description: "Planned GitHub posture findings" },
-          { value: "settings", name: "Settings", description: "Paths, auth, and config" },
-          { value: "quit", name: "Quit" },
-        ],
-      });
+      let action: MainAction;
+      try {
+        action = await selectPrompt<MainAction>({
+          message: "Strappy",
+          pageSize: 10,
+          choices: [
+            { value: "dashboard", name: "Dashboard", description: "Fleet health summary" },
+            { value: "sync", name: "Sync now", description: "Refresh GitHub inventory and mirrors" },
+            { value: "enrich", name: "Enrich stale repos", description: "Fetch languages, branches, releases, README" },
+            { value: "checkouts", name: "Checkouts", description: "Create, scan, and cleanup working copies" },
+            { value: "audits", name: "Audits", description: "Planned GitHub posture findings" },
+            { value: "settings", name: "Settings", description: "Paths, auth, and config" },
+            { value: "quit", name: "Quit" },
+          ],
+        });
+      } catch (err) {
+        if (isBackSignal(err)) return;
+        throw err;
+      }
 
       if (action === "quit") return;
       if (action === "dashboard") await showDashboard();
-      else if (action === "repos") await reposView();
       else if (action === "sync") await runCommand("Sync now", () => syncCommand([]));
       else if (action === "enrich") await runCommand("Enrich stale repos", () => enrichCommand([], {}));
       else if (action === "checkouts") await checkoutsView();
@@ -150,50 +163,60 @@ async function showDashboard(): Promise<void> {
   console.log("");
 }
 
-async function reposView(): Promise<void> {
+async function repoCheckoutSearchView(): Promise<void> {
   while (true) {
     const ctx = await loadTuiContext();
     const records = Object.values(ctx.state.repos).sort((a, b) => a.fullName.localeCompare(b.fullName));
 
     clear();
-    title("Repos");
+    title("Choose Repo");
     if (records.length === 0) {
       console.log("No repos in inventory. Run Sync now first.");
       await pause();
       return;
     }
 
-    const repo = await search<RepoRecord>({
-      message: "Search repos",
-      pageSize: 12,
-      source: (term) => repoChoices(records, term),
-    });
+    let selection: RepoRecord;
+    try {
+      selection = await searchPrompt<RepoRecord>({
+        message: "Search repos",
+        pageSize: 12,
+        source: (term) => repoChoices(records, term),
+      });
+    } catch (err) {
+      if (isBackSignal(err)) return;
+      throw err;
+    }
 
-    const next = await repoActions(repo);
-    if (next === "main") return;
+    const next = await repoActions(selection);
+    if (next === "checkoutCreated") return;
   }
 }
 
-async function repoActions(repo: RepoRecord): Promise<"search" | "main"> {
+async function repoActions(repo: RepoRecord): Promise<"search" | "checkoutCreated"> {
   while (true) {
     clear();
     printRepoSummary(repo);
     console.log("");
 
-    const action = await select<RepoAction>({
-      message: "Repo action",
-      choices: [
-        { value: "summary", name: "Refresh summary" },
-        { value: "info", name: "Show full info", description: "`strappy info` output" },
-        { value: "sync", name: "Sync this repo" },
-        { value: "enrich", name: "Enrich this repo" },
-        { value: "github", name: "Show GitHub URL" },
-        { value: "search", name: "Back to repo search" },
-        { value: "main", name: "Back to main menu" },
-      ],
-    });
+    let action: RepoAction;
+    try {
+      action = await selectPrompt<RepoAction>({
+        message: "Repo action",
+        choices: [
+          { value: "summary", name: "Refresh summary" },
+          { value: "info", name: "Show full info", description: "`strappy info` output" },
+          { value: "sync", name: "Sync this repo" },
+          { value: "enrich", name: "Enrich this repo" },
+          { value: "github", name: "Show GitHub URL" },
+          { value: "checkout", name: "Create checkout" },
+        ],
+      });
+    } catch (err) {
+      if (isBackSignal(err)) return "search";
+      throw err;
+    }
 
-    if (action === "main" || action === "search") return action;
     if (action === "summary") {
       const refreshed = await findRepo(repo.fullName);
       if (refreshed) repo = refreshed;
@@ -202,6 +225,10 @@ async function repoActions(repo: RepoRecord): Promise<"search" | "main"> {
     if (action === "info") await runCommand(`Info: ${repo.fullName}`, () => infoCommand(repo.fullName, {}));
     else if (action === "sync") await runCommand(`Sync: ${repo.fullName}`, () => syncCommand([repo.fullName]));
     else if (action === "enrich") await runCommand(`Enrich: ${repo.fullName}`, () => enrichCommand([repo.fullName], {}));
+    else if (action === "checkout") {
+      if (await createCheckoutFlow(repo)) return "checkoutCreated";
+      continue;
+    }
     else if (action === "github") {
       console.log("");
       console.log(repo.metadata?.htmlUrl ?? `https://github.com/${repo.fullName}`);
@@ -231,34 +258,38 @@ async function checkoutsView(): Promise<void> {
     }
 
     console.log("");
-    const action = await select<CheckoutsAction>({
-      message: "Checkout action",
-      choices: [
-        { value: "create", name: "Create checkout", description: "Clone from mirror into the checkout root" },
-        {
-          value: "select",
-          name: "Select checkout",
-          description: "Inspect, scan, or cleanup one checkout",
-          disabled: checkouts.length === 0 ? "No registered checkouts" : false,
-        },
-        {
-          value: "scan",
-          name: "Scan all",
-          description: "Refresh dirty/unpushed status",
-          disabled: checkouts.length === 0 ? "No registered checkouts" : false,
-        },
-        {
-          value: "cleanup",
-          name: "Cleanup all safe",
-          description: "Deletes only checkouts with no dirty or unpushed work",
-          disabled: checkouts.length === 0 ? "No registered checkouts" : false,
-        },
-        { value: "back", name: "Back to main menu" },
-      ],
-    });
+    let action: CheckoutsAction;
+    try {
+      action = await selectPrompt<CheckoutsAction>({
+        message: "Checkout action",
+        choices: [
+          { value: "create", name: "Create checkout", description: "Search repos, inspect details, then clone from mirror" },
+          {
+            value: "select",
+            name: "Select checkout",
+            description: "Inspect, scan, or cleanup one checkout",
+            disabled: checkouts.length === 0 ? "No registered checkouts" : false,
+          },
+          {
+            value: "scan",
+            name: "Scan all",
+            description: "Refresh dirty/unpushed status",
+            disabled: checkouts.length === 0 ? "No registered checkouts" : false,
+          },
+          {
+            value: "cleanup",
+            name: "Cleanup all safe",
+            description: "Deletes only checkouts with no dirty or unpushed work",
+            disabled: checkouts.length === 0 ? "No registered checkouts" : false,
+          },
+        ],
+      });
+    } catch (err) {
+      if (isBackSignal(err)) return;
+      throw err;
+    }
 
-    if (action === "back") return;
-    if (action === "create") await createCheckoutFlow();
+    if (action === "create") await repoCheckoutSearchView();
     else if (action === "scan") await runCommand("Scan checkouts", async () => {
       const store = openStore(getPaths());
       const scanned = await scanCheckouts(store);
@@ -295,16 +326,20 @@ async function settingsView(): Promise<void> {
     console.log(`Schedule           ${ctx.config.schedule}`);
     console.log("");
 
-    const action = await select<SettingsAction>({
-      message: "Settings action",
-      choices: [
-        { value: "auth", name: "Check GitHub auth" },
-        { value: "status", name: "Print status" },
-        { value: "back", name: "Back to main menu" },
-      ],
-    });
+    let action: SettingsAction;
+    try {
+      action = await selectPrompt<SettingsAction>({
+        message: "Settings action",
+        choices: [
+          { value: "auth", name: "Check GitHub auth" },
+          { value: "status", name: "Print status" },
+        ],
+      });
+    } catch (err) {
+      if (isBackSignal(err)) return;
+      throw err;
+    }
 
-    if (action === "back") return;
     if (action === "auth") await runCommand("GitHub auth", () => authCheck());
     else if (action === "status") await runCommand("Status", () => statusCommand({}));
   }
@@ -439,26 +474,21 @@ function printCheckout(name: string, checkout: CheckoutRecord): void {
   );
 }
 
-async function createCheckoutFlow(): Promise<void> {
-  const ctx = await loadTuiContext();
-  const records = Object.values(ctx.state.repos).sort((a, b) => a.fullName.localeCompare(b.fullName));
-  if (records.length === 0) {
-    await plannedView("Create Checkout", ["No repos in inventory. Run Sync now first."]);
-    return;
+async function createCheckoutFlow(repo: RepoRecord): Promise<boolean> {
+  let branch: string;
+  let name: string;
+  try {
+    branch = await inputPrompt({
+      message: "Branch",
+      default: repo.defaultBranch,
+    });
+    name = await inputPrompt({
+      message: "Checkout name (blank for default)",
+    });
+  } catch (err) {
+    if (isBackSignal(err)) return false;
+    throw err;
   }
-
-  const repo = await search<RepoRecord>({
-    message: "Repo to checkout",
-    pageSize: 12,
-    source: (term) => repoChoices(records, term),
-  });
-  const branch = await input({
-    message: "Branch",
-    default: repo.defaultBranch,
-  });
-  const name = await input({
-    message: "Checkout name (blank for default)",
-  });
 
   await runCommand(`Checkout ${repo.fullName}`, async () => {
     const paths = getPaths();
@@ -478,6 +508,7 @@ async function createCheckoutFlow(): Promise<void> {
     console.log(`Origin ${result.record.remoteUrl ?? "local mirror"}`);
     console.log(`Status ${checkoutStatus(result.record)}`);
   });
+  return true;
 }
 
 async function checkoutDetailFlow(): Promise<void> {
@@ -486,27 +517,33 @@ async function checkoutDetailFlow(): Promise<void> {
     const entries = Object.entries(ctx.state.checkouts).sort((a, b) => a[0].localeCompare(b[0]));
     if (entries.length === 0) return;
 
-    const name = await select<string>({
-      message: "Select checkout",
-      pageSize: 12,
-      choices: entries.map(([checkoutName, checkout]) => ({
-        value: checkoutName,
-        name: `${checkoutName.padEnd(18)} ${checkout.repo.padEnd(32)} ${checkoutStatus(checkout)}`,
-        description: checkout.path,
-      })),
-    });
+    let name: string;
+    try {
+      name = await selectPrompt<string>({
+        message: "Select checkout",
+        pageSize: 12,
+        choices: entries.map(([checkoutName, checkout]) => ({
+          value: checkoutName,
+          name: `${checkoutName.padEnd(18)} ${checkout.repo.padEnd(32)} ${checkoutStatus(checkout)}`,
+          description: checkout.path,
+        })),
+      });
+    } catch (err) {
+      if (isBackSignal(err)) return;
+      throw err;
+    }
 
     const next = await singleCheckoutActions(name);
-    if (next === "back") return;
+    if (next === "done") return;
   }
 }
 
-async function singleCheckoutActions(name: string): Promise<"again" | "back"> {
+async function singleCheckoutActions(name: string): Promise<"select" | "done"> {
   while (true) {
     const ctx = await loadTuiContext();
     const resolvedName = resolveCheckoutName(ctx.state, name);
     const checkout = ctx.state.checkouts[resolvedName];
-    if (!checkout) return "back";
+    if (!checkout) return "done";
 
     clear();
     title(resolvedName);
@@ -522,22 +559,26 @@ async function singleCheckoutActions(name: string): Promise<"again" | "back"> {
     else console.log("Cleanup    safe");
     console.log("");
 
-    const action = await select<CheckoutDetailAction>({
-      message: "Checkout action",
-      choices: [
-        { value: "scan", name: "Scan" },
-        {
-          value: "cleanup",
-          name: "Cleanup if safe",
-          disabled: unsafe ? unsafe : false,
-        },
-        { value: "forceCleanup", name: "Force cleanup" },
-        { value: "path", name: "Show path" },
-        { value: "back", name: "Back to checkouts" },
-      ],
-    });
+    let action: CheckoutDetailAction;
+    try {
+      action = await selectPrompt<CheckoutDetailAction>({
+        message: "Checkout action",
+        choices: [
+          { value: "scan", name: "Scan" },
+          {
+            value: "cleanup",
+            name: "Cleanup if safe",
+            disabled: unsafe ? unsafe : false,
+          },
+          { value: "forceCleanup", name: "Force cleanup" },
+          { value: "path", name: "Show path" },
+        ],
+      });
+    } catch (err) {
+      if (isBackSignal(err)) return "select";
+      throw err;
+    }
 
-    if (action === "back") return "back";
     if (action === "path") {
       console.log("");
       console.log(checkout.path);
@@ -553,18 +594,24 @@ async function singleCheckoutActions(name: string): Promise<"again" | "back"> {
         const store = openStore(getPaths());
         printCleanupResult(await cleanupCheckouts(store, { name: resolvedName }));
       });
-      return "back";
+      return "done";
     } else if (action === "forceCleanup") {
-      const ok = await confirm({
-        message: `Force delete ${resolvedName}? Dirty or unpushed work may be lost.`,
-        default: false,
-      });
+      let ok: boolean;
+      try {
+        ok = await confirmPrompt({
+          message: `Force delete ${resolvedName}? Dirty or unpushed work may be lost.`,
+          default: false,
+        });
+      } catch (err) {
+        if (isBackSignal(err)) continue;
+        throw err;
+      }
       if (ok) {
         await runCommand(`Force cleanup ${resolvedName}`, async () => {
           const store = openStore(getPaths());
           printCleanupResult(await cleanupCheckouts(store, { name: resolvedName, force: true }));
         });
-        return "back";
+        return "done";
       }
     }
   }
@@ -584,7 +631,11 @@ function printCleanupResult(result: {
 }
 
 async function pause(message = "Press Enter to continue"): Promise<void> {
-  await input({ message });
+  try {
+    await inputPrompt({ message });
+  } catch (err) {
+    if (!isBackSignal(err)) throw err;
+  }
 }
 
 function clear(): void {
@@ -594,6 +645,75 @@ function clear(): void {
 function title(text: string): void {
   console.log(text);
   console.log("-".repeat(Math.max(12, Math.min(80, text.length))));
+}
+
+async function selectPrompt<Value>(config: Parameters<typeof select<Value>>[0]): Promise<Value> {
+  return withEscapeBack((signal) =>
+    select<Value>(
+      {
+        ...config,
+        instructions: config.instructions ?? BACK_INSTRUCTIONS,
+      },
+      { signal },
+    ),
+  );
+}
+
+async function searchPrompt<Value>(config: Parameters<typeof search<Value>>[0]): Promise<Value> {
+  return withEscapeBack((signal) =>
+    search<Value>(
+      {
+        ...config,
+        instructions: config.instructions ?? BACK_INSTRUCTIONS,
+      },
+      { signal },
+    ),
+  );
+}
+
+async function inputPrompt(config: Parameters<typeof input>[0]): Promise<string> {
+  return withEscapeBack((signal) => input(config, { signal }));
+}
+
+async function confirmPrompt(config: Parameters<typeof confirm>[0]): Promise<boolean> {
+  return withEscapeBack((signal) => confirm(config, { signal }));
+}
+
+async function withEscapeBack<Value>(fn: (signal: AbortSignal) => Promise<Value>): Promise<Value> {
+  const controller = new AbortController();
+  const onKeypress = (_char: string, key: KeypressEvent) => {
+    if (!controller.signal.aborted && (key.name === "escape" || key.sequence === "\u001b")) {
+      controller.abort(ESCAPE_ABORT_REASON);
+    }
+  };
+
+  readline.emitKeypressEvents(process.stdin);
+  process.stdin.on("keypress", onKeypress);
+  try {
+    return await fn(controller.signal);
+  } catch (err) {
+    if (isEscapeAbort(err)) throw new BackSignal();
+    throw err;
+  } finally {
+    process.stdin.removeListener("keypress", onKeypress);
+  }
+}
+
+interface KeypressEvent {
+  name?: string;
+  sequence?: string;
+}
+
+function isBackSignal(err: unknown): boolean {
+  return err instanceof BackSignal;
+}
+
+function isEscapeAbort(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    err.name === "AbortPromptError" &&
+    (err as Error & { cause?: unknown }).cause === ESCAPE_ABORT_REASON
+  );
 }
 
 function isPromptExit(err: unknown): boolean {
