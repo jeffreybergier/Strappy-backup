@@ -32,9 +32,10 @@ first-pass TUI, and direct GitHub-origin checkout management.
   **never written into a mirror's git config**.
 
 Also present now: a first-pass interactive TUI shell for the dashboard, repo
-search/actions, real checkout workflows, audit placeholder, ask placeholder, and
-settings. The daemon, audits, repo profiles, and pi integration are still future
-work. Relay push is intentionally not part of the current checkout flow:
+search/actions, real checkout workflows, audit placeholder, and
+settings, plus a repo-local Codex skill at `skills/strappy-fleet` for AI-assisted
+SQLite/CLI workflows. The daemon, audits, repo profiles, and deeper AI
+integration are still future work. Relay push is intentionally not part of the current checkout flow:
 checkouts use GitHub as `origin`, so normal `git push` works with your existing
 Git credentials.
 

@@ -28,7 +28,6 @@ type MainAction =
   | "enrich"
   | "checkouts"
   | "audits"
-  | "ask"
   | "settings"
   | "quit";
 
@@ -77,7 +76,6 @@ export async function runTui(): Promise<void> {
           { value: "enrich", name: "Enrich stale repos", description: "Fetch languages, branches, releases, README" },
           { value: "checkouts", name: "Checkouts", description: "Create, scan, and cleanup working copies" },
           { value: "audits", name: "Audits", description: "Planned GitHub posture findings" },
-          { value: "ask", name: "Ask", description: "Planned Pi-powered repo questions" },
           { value: "settings", name: "Settings", description: "Paths, auth, and config" },
           { value: "quit", name: "Quit" },
         ],
@@ -92,10 +90,6 @@ export async function runTui(): Promise<void> {
       else if (action === "audits") await plannedView("Audits", [
         "This view will store durable findings for branch protection, collaborators, Actions, security, and hygiene.",
         "Next implementation step after checkouts: `strappy audit`, `strappy findings`, and an audit findings table.",
-      ]);
-      else if (action === "ask") await plannedView("Ask", [
-        "This view will use Pi with read-only tools over mirrors, SQLite, checkouts, and audit findings.",
-        "Before that, Strappy should build deterministic repo profiles so AI answers have compact evidence.",
       ]);
       else if (action === "settings") await settingsView();
     }

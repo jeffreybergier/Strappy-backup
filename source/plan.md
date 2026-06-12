@@ -243,11 +243,11 @@ failure.
 
 ---
 
-## 6. Goal 4 - Repo Profiles and Pi Ask
+## 6. Goal 4 - Repo Profiles and AI Skills
 
-Before asking an LLM, Strappy should build deterministic repo profiles from
-mirrors. This gives Pi compact, reliable context and avoids spending model
-tokens on obvious detection.
+Before exposing Strappy data to an LLM, Strappy should build deterministic repo
+profiles from mirrors. This gives an external AI skill compact, reliable context
+and avoids spending model tokens on obvious detection.
 
 ### Deterministic Profile
 
@@ -301,7 +301,7 @@ Example questions:
 
 Guardrails:
 
-- Default Pi mode is read-only.
+- Default AI skill mode is read-only.
 - No secrets are exposed through tools.
 - File reads come from mirrors unless the user explicitly asks about a
   checkout.
@@ -312,15 +312,15 @@ Guardrails:
 ## 7. TUI Proposal
 
 The TUI should optimize for repeated operations: scan, compare, checkout, push,
-cleanup, audit, ask. Avoid a marketing-style home screen; open directly into
-the fleet dashboard.
+cleanup, and audit. Avoid a marketing-style home screen; open directly into the
+fleet dashboard.
 
 ### First Screen
 
 ```
  STRAPPY  /repo/checkouts   sync 2h ago   128 repos   7 checkouts   2 dirty   5 findings
  ─────────────────────────────────────────────────────────────────────────────
-  Dashboard   Repos   Checkouts   Audits   Ask   Settings
+  Dashboard   Repos   Checkouts   Audits   Settings
 
   Needs Attention
   danger  2 checkouts have local commits not in mirrors
@@ -346,7 +346,6 @@ Use tabs or a left rail:
 | Repos | Search/browse all mirrors and metadata. | Checkout, sync one, enrich, profile, info. |
 | Checkouts | Manage `/repo/checkouts`. | Open path, scan, cleanup safe, force cleanup. |
 | Audits | Findings by repo/category/severity. | Refresh, dismiss, copy remediation, open GitHub URL. |
-| Ask | Pi-powered repo Q&A. | Ask, save answer, jump to referenced repo. |
 | Settings | Auth, owners, schedules, checkout root, scopes. | Check token, edit config, test GitHub scopes. |
 
 ### Repo List
@@ -366,7 +365,6 @@ Actions for selected repo:
 - sync now
 - enrich/profile
 - audit
-- ask about this repo
 - show details
 - open GitHub
 
@@ -400,12 +398,14 @@ info    me/old-tool     No release has ever been published
 Selecting a finding shows evidence, API scope notes, remediation, GitHub URL,
 and dismiss controls.
 
-### Ask View
+### AI Skill
 
-The Ask pane should feel like a constrained fleet analyst, not a coding agent:
+Repo Q&A should live outside the Strappy TUI as an AI skill or toolset that can
+run from the current working directory. The skill should act like a constrained
+fleet analyst over Strappy's read-only data:
 
 ```
-Ask: Which repos are web apps with no GitHub Actions?
+Question: Which repos are web apps with no GitHub Actions?
 
 Answer
   6 likely web apps have no workflow files...
@@ -415,12 +415,12 @@ Referenced repos
   org/app      web, Next, no .github/workflows
 ```
 
-Useful affordances:
+Useful affordances for the skill:
 
 - slash presets: `/web`, `/mac`, `/dirty`, `/audit`, `/stale`
 - references are selectable
-- answers can be saved as `agent_notes`
-- TUI can show tool calls in a collapsible detail pane
+- answers can optionally be saved as `agent_notes`
+- tool calls should be visible in the host AI client
 
 ### Implementation Approach
 
@@ -459,7 +459,6 @@ strappy audit [repo...] [--category C] [--force]
 strappy findings [--severity S] [--category C] [--json]
 strappy dismiss <finding-id> [--until DATE] [--reason TEXT]
 
-strappy ask "<question>"
 strappy daemon
 strappy status [--oneline]
 ```
@@ -478,7 +477,7 @@ strappy status [--oneline]
 | GitHub API | `octokit` | Already implemented, supports pagination and typed REST calls. |
 | State | `better-sqlite3` | Already implemented; good for queryable fleet state. |
 | Locking | `proper-lockfile` | Already implemented for sync/enrich coordination. |
-| LLM | Pi packages | Provider-agnostic agent loop and terminal UI ecosystem. |
+| LLM integration | External AI skill | Keeps Strappy focused on durable data and lets the active coding agent answer from the current working directory. |
 
 ---
 
@@ -493,7 +492,7 @@ strappy status [--oneline]
 4. **M4 - Audit engine:** branch protection, collaborators, Actions, security,
    hygiene findings stored in SQLite.
 5. **M5 - Repo profiles:** deterministic project type/technology classifier.
-6. **M6 - Pi Ask:** read-only tools over inventory, profiles, mirrors,
+6. **M6 - AI skill:** read-only tools over inventory, profiles, mirrors,
    checkouts, and audit findings.
 7. **M7 - Daemon:** scheduled sync, audit refresh, checkout scans, optional AI
    digest.
