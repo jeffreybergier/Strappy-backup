@@ -232,6 +232,10 @@ export function checkoutStatus(record: CheckoutRecord): string {
   return flags.length ? flags.join(", ") : "clean";
 }
 
+export function checkoutBranch(record: CheckoutRecord): string {
+  return record.currentBranch ?? record.branch;
+}
+
 export function isCheckoutSafe(record: CheckoutRecord): boolean {
   return unsafeReason(record) === null;
 }

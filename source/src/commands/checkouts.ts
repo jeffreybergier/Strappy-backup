@@ -1,4 +1,5 @@
 import {
+  checkoutBranch,
   checkoutStatus,
   scanCheckouts,
 } from "../checkouts.js";
@@ -38,7 +39,7 @@ export async function checkoutsCommand(opts: CheckoutsCommandOptions): Promise<v
 }
 
 function printCheckout(name: string, checkout: CheckoutRecord): void {
-  const branch = checkout.currentBranch ?? checkout.branch;
+  const branch = checkoutBranch(checkout);
   const status = checkoutStatus(checkout);
   const scanned = checkout.lastScan ? `scan ${timeAgo(checkout.lastScan)}` : "never scanned";
   console.log(

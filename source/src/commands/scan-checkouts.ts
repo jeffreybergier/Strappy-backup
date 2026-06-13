@@ -1,4 +1,4 @@
-import { resolveCheckoutName, scanCheckouts } from "../checkouts.js";
+import { checkoutBranch, resolveCheckoutName, scanCheckouts } from "../checkouts.js";
 import { openStore } from "../db.js";
 import { getPaths } from "../paths.js";
 
@@ -22,6 +22,7 @@ export async function scanCheckoutsCommand(
     return;
   }
 
+  console.log("name                 branch           status");
   for (const [name, checkout] of entries) {
     const status = checkout.scanError
       ? `warning: ${checkout.scanError}`
@@ -32,6 +33,6 @@ export async function scanCheckoutsCommand(
           : (checkout.ahead ?? 0) > 0
             ? `${checkout.ahead} unpushed`
             : "clean";
-    console.log(`${name}: ${status}`);
+    console.log(`${name.padEnd(20)} ${checkoutBranch(checkout).padEnd(16)} ${status}`);
   }
 }

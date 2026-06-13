@@ -16,6 +16,7 @@ import { confirm, input, search, select } from "@inquirer/prompts";
 import { execa } from "execa";
 import { resolveToken, type ResolvedToken } from "./auth.js";
 import {
+  checkoutBranch,
   checkoutStatus,
   cleanupCheckouts,
   createCheckout,
@@ -113,6 +114,12 @@ interface DashboardRow {
   label: string;
   value: string;
   note?: string;
+}
+
+interface CheckoutListLayout {
+  nameWidth: number;
+  branchWidth: number;
+  statusWidth: number;
 }
 
 const ESCAPE_ABORT_REASON = "strappy:escape-back";
@@ -420,7 +427,7 @@ function syncDashboardLines(mode: Extract<DashboardMode, { type: "sync" }>): str
   const width = screenWidth();
   const stateLabel = mode.status === "running" ? "running" : "complete";
   return [
-    color.bold(TUI_TITLE),
+    ...tuiTitleLines(),
     color.dim(`${mode.label} | ${stateLabel} | ${clock(new Date())}`),
     rule(),
     ...mode.lines.slice(-maxLines).map((line) => fitText(line, width)),
@@ -449,7 +456,7 @@ function dashboardLines(snapshot: DashboardSnapshot, nextAutoSyncAt: number): st
     { label: "Checkout Timer", value: `${DASHBOARD_REFRESH_MS / 1000}s` },
   ];
   const lines = [
-    color.bold(TUI_TITLE),
+    ...tuiTitleLines(),
     color.bold("Sync"),
     ...syncRows.map((row) => dashboardRowText(row.label, row.value, row.note)),
     "",
@@ -684,7 +691,11 @@ function mainMenuChoices(checkouts: [string, CheckoutRecord][]): Array<Choice<Ma
     menuSection(checkouts.length ? "Checkouts" : "Checkouts (none)"),
   ];
 
-  choices.push(...checkouts.map(([name, checkout]) => checkoutChoice(name, checkout)));
+  if (checkouts.length) {
+    const layout = checkoutListLayout(checkouts);
+    choices.push(checkoutMenuHeader(layout));
+    choices.push(...checkouts.map(([name, checkout]) => checkoutChoice(name, checkout, layout)));
+  }
   return choices;
 }
 
@@ -973,19 +984,76 @@ function printAuditRepoList(records: RepoRecord[]): void {
   for (const repo of records) console.log(repoListLine(repo, layout));
 }
 
-function checkoutChoice(name: string, checkout: CheckoutRecord): Choice<MainAction> {
+function checkoutChoice(
+  name: string,
+  checkout: CheckoutRecord,
+  layout: CheckoutListLayout,
+): Choice<MainAction> {
   return {
     value: `checkout:${name}`,
-    name: checkoutMenuLine(name, checkout),
+    name: checkoutMenuLine(name, checkout, layout),
     short: name,
   };
 }
 
-function checkoutMenuLine(name: string, checkout: CheckoutRecord): string {
-  const status = checkoutStatusLabel(checkout);
-  const branch = fitText(checkout.currentBranch ?? checkout.branch, 14);
-  const nameWidth = Math.max(18, screenWidth() - 38);
-  return `${fitText(name, nameWidth).padEnd(nameWidth)}  ${status.padEnd(12)}  ${branch}`;
+function checkoutMenuHeader(layout: CheckoutListLayout): Separator {
+  return new Separator(color.dim(`  ${checkoutMenuHeaderLine(layout)}`));
+}
+
+function checkoutMenuHeaderLine(layout: CheckoutListLayout): string {
+  return (
+    `${"Name".padEnd(layout.nameWidth)}  ` +
+    `${"Branch".padEnd(layout.branchWidth)}  ` +
+    "Status".padEnd(layout.statusWidth)
+  );
+}
+
+function checkoutMenuLine(name: string, checkout: CheckoutRecord, layout: CheckoutListLayout): string {
+  const status = fitText(checkoutStatusLabel(checkout), layout.statusWidth);
+  const branch = fitText(checkoutBranch(checkout), layout.branchWidth);
+  return (
+    `${fitText(name, layout.nameWidth).padEnd(layout.nameWidth)}  ` +
+    `${branch.padEnd(layout.branchWidth)}  ` +
+    status.padEnd(layout.statusWidth)
+  );
+}
+
+function checkoutListLayout(checkouts: [string, CheckoutRecord][]): CheckoutListLayout {
+  const minNameWidth = 12;
+  const minBranchWidth = 10;
+  const maxBranchWidth = 40;
+  const gapsWidth = 4;
+  const rowWidth = Math.max(32, screenWidth() - 3);
+  const desiredStatusWidth = maxTextLength(["Status", ...checkouts.map(([, checkout]) => checkoutStatusLabel(checkout))]);
+  const desiredBranchWidth = Math.min(
+    maxBranchWidth,
+    maxTextLength(["Branch", ...checkouts.map(([, checkout]) => checkoutBranch(checkout))]),
+  );
+  const desiredNameWidth = maxTextLength(["Name", ...checkouts.map(([name]) => name)]);
+  const desiredTotal = desiredNameWidth + desiredBranchWidth + desiredStatusWidth + gapsWidth;
+
+  if (desiredTotal <= rowWidth) {
+    return {
+      nameWidth: desiredNameWidth,
+      branchWidth: desiredBranchWidth,
+      statusWidth: desiredStatusWidth,
+    };
+  }
+
+  const statusWidth = Math.min(
+    desiredStatusWidth,
+    Math.max("Status".length, rowWidth - minNameWidth - minBranchWidth - gapsWidth),
+  );
+  const branchWidth = Math.min(
+    desiredBranchWidth,
+    Math.max(minBranchWidth, rowWidth - minNameWidth - statusWidth - gapsWidth),
+  );
+  const nameWidth = Math.max("Name".length, rowWidth - branchWidth - statusWidth - gapsWidth);
+  return { nameWidth, branchWidth, statusWidth };
+}
+
+function maxTextLength(values: string[]): number {
+  return values.reduce((max, value) => Math.max(max, value.length), 0);
 }
 
 function checkoutStatusLabel(checkout: CheckoutRecord): string {
@@ -1056,6 +1124,7 @@ async function confirmCleanCheckout(name: string, checkout: CheckoutRecord): Pro
   clear();
   title(`Remove ${name}`);
   console.log(`Repo   ${checkout.repo}`);
+  console.log(`Branch ${checkoutBranch(checkout)}`);
   console.log(`Path   ${checkout.path}`);
   console.log(`Status ${checkoutStatus(checkout)}`);
   console.log("");
@@ -1090,7 +1159,7 @@ async function checkoutWorkMenu(name: string): Promise<void> {
 
     clear();
     title(name);
-    console.log(`${checkoutStatus(checkout)}  ${checkout.repo}  ${checkout.currentBranch ?? checkout.branch}`);
+    console.log(`${checkoutStatus(checkout)}  ${checkout.repo}  ${checkoutBranch(checkout)}`);
     if (checkout.scanError) console.log(color.warn(`Warning  ${checkout.scanError}`));
     console.log(color.dim(checkout.path));
     console.log("");
@@ -1350,6 +1419,10 @@ function ansi(code: number): (value: string) => string {
 
 function rule(): string {
   return color.dim("─".repeat(screenWidth()));
+}
+
+function tuiTitleLines(): string[] {
+  return ["", color.bold(TUI_TITLE), ""];
 }
 
 function screenWidth(): number {
