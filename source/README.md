@@ -38,9 +38,10 @@ first-pass TUI, and direct GitHub-origin checkout management.
 
 Also present now: a first-pass interactive TUI shell with a live auth/health
 dashboard, checkout-oriented repo search/actions, and integrated checkout
-workflows, plus a repo-local Codex skill at `skills/strappy-fleet` for AI-assisted
-SQLite/CLI workflows. The daemon, audits, repo profiles, and deeper AI
-integration are still future work. Relay push is intentionally not part of the current checkout flow:
+workflows, a first-pass audit menu for repo hygiene, plus a repo-local
+Codex skill at `skills/strappy-fleet` for AI-assisted SQLite/CLI workflows. The
+daemon, durable audit findings, repo profiles, and deeper AI integration are
+still future work. Relay push is intentionally not part of the current checkout flow:
 checkouts use GitHub as `origin`, so normal `git push` works with your existing
 Git credentials.
 

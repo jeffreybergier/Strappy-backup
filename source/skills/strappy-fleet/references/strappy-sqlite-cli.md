@@ -102,6 +102,18 @@ One optional row per repo, keyed by `github_id`.
 - `open_pr_count INTEGER`
 - `readme TEXT`
 
+### `tier3_metadata`
+
+One optional row per active non-archived repo after `sync` refreshes Tier-3
+files.
+
+- `github_id INTEGER PRIMARY KEY`
+- `fetched_at TEXT`
+- `ref TEXT`
+- `readme_md TEXT`
+- `agents_md TEXT`
+- `compose_yml TEXT`
+
 ### `checkouts`
 
 One row per registered disposable working copy.
@@ -202,6 +214,87 @@ Topics:
 SELECT r.full_name, t.value AS topic
 FROM repos r, json_each(r.topics) AS t
 ORDER BY topic, r.full_name;
+```
+
+Audit: active repos with no README.md in the Tier-3 snapshot:
+
+```sql
+SELECT r.full_name
+FROM repos r
+JOIN tier3_metadata t USING (github_id)
+WHERE r.orphaned = 0
+  AND r.archived = 0
+  AND t.readme_md IS NULL
+ORDER BY r.full_name;
+```
+
+Audit: active repos with no AGENTS.md in the Tier-3 snapshot:
+
+```sql
+SELECT r.full_name
+FROM repos r
+JOIN tier3_metadata t USING (github_id)
+WHERE r.orphaned = 0
+  AND r.archived = 0
+  AND t.agents_md IS NULL
+ORDER BY r.full_name;
+```
+
+Audit: active repos with no compose file in the Tier-3 snapshot:
+
+```sql
+SELECT r.full_name
+FROM repos r
+JOIN tier3_metadata t USING (github_id)
+WHERE r.orphaned = 0
+  AND r.archived = 0
+  AND t.compose_yml IS NULL
+ORDER BY r.full_name;
+```
+
+Audit: active repos whose stored compose file does not reference the
+altivec-intelligence image:
+
+```sql
+SELECT r.full_name
+FROM repos r
+JOIN tier3_metadata t USING (github_id)
+WHERE r.orphaned = 0
+  AND r.archived = 0
+  AND t.compose_yml IS NOT NULL
+  AND instr(t.compose_yml, 'ghcr.io/jeffreybergier/altivec-intelligence') = 0
+ORDER BY r.full_name;
+```
+
+Audit: active repos without protected `main`. This matches the TUI behavior:
+branch metadata must exist, and a repo matches if `main` is absent or present
+but unprotected.
+
+```sql
+SELECT r.full_name
+FROM repos r
+JOIN enrichment e USING (github_id)
+WHERE r.orphaned = 0
+  AND r.archived = 0
+  AND e.branches IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM json_each(e.branches) AS b
+    WHERE json_extract(b.value, '$.name') = 'main'
+      AND json_extract(b.value, '$.protected') = 1
+  )
+ORDER BY r.full_name;
+```
+
+Audit: active repos whose default branch is not named `main`:
+
+```sql
+SELECT full_name, default_branch
+FROM repos
+WHERE orphaned = 0
+  AND archived = 0
+  AND default_branch <> 'main'
+ORDER BY full_name;
 ```
 
 Checkouts needing attention:

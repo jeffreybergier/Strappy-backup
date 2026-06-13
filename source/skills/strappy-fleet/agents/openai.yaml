@@ -1,4 +1,4 @@
 interface:
   display_name: "Strappy Fleet"
-  short_description: "Query and operate Strappy repo backups"
-  default_prompt: "Use $strappy-fleet to inspect my Strappy repository fleet and recommend safe next steps."
+  short_description: "Query, audit, and operate Strappy repos"
+  default_prompt: "Use $strappy-fleet to inspect and audit my Strappy repository fleet, then recommend safe next steps."

@@ -23,8 +23,17 @@ import type { CheckoutRecord, RepoRecord, StrappyState } from "./state.js";
 
 type MainAction =
   | "sync"
+  | "audit"
   | "checkout"
   | `checkout:${string}`;
+
+type AuditAction =
+  | "no-readme"
+  | "no-agents"
+  | "no-compose"
+  | "compose-no-altivec"
+  | "main-unprotected"
+  | "default-branch-not-main";
 
 type CheckoutWorkAction = "diff" | "commit" | "push";
 
@@ -50,11 +59,88 @@ interface AuthDashboardStatus {
   attention?: string;
 }
 
+interface AuditDefinition {
+  action: AuditAction;
+  name: string;
+  description: string;
+  empty: string;
+  isKnown: (repo: RepoRecord) => boolean;
+  unknownLabel: string;
+  refreshHint: string;
+  matches: (repo: RepoRecord) => boolean;
+}
+
 const ESCAPE_ABORT_REASON = "strappy:escape-back";
 const DASHBOARD_REFRESH_ABORT_REASON = "strappy:dashboard-refresh";
 const DASHBOARD_REFRESH_MS = 60_000;
 const AUTH_STATUS_CACHE_MS = 5 * 60_000;
 const AUTH_STATUS_TIMEOUT_MS = 2_500;
+const ALTIVEC_INTELLIGENCE_IMAGE = "ghcr.io/jeffreybergier/altivec-intelligence";
+const AUDITS: readonly AuditDefinition[] = [
+  {
+    action: "no-readme",
+    name: "Repos with no README.md",
+    description: "Missing README.md in the Tier-3 file snapshot",
+    empty: "Every repo with Tier-3 data has a README.md.",
+    isKnown: hasTier3Data,
+    unknownLabel: "without Tier-3 file data",
+    refreshHint: "Run Sync to fetch README.md, AGENTS.md, and compose.yml for active repos.",
+    matches: (repo) => repo.tier3?.readmeMd === null,
+  },
+  {
+    action: "no-agents",
+    name: "Repos with no AGENTS.md",
+    description: "Missing AGENTS.md in the Tier-3 file snapshot",
+    empty: "Every repo with Tier-3 data has an AGENTS.md.",
+    isKnown: hasTier3Data,
+    unknownLabel: "without Tier-3 file data",
+    refreshHint: "Run Sync to fetch README.md, AGENTS.md, and compose.yml for active repos.",
+    matches: (repo) => repo.tier3?.agentsMd === null,
+  },
+  {
+    action: "no-compose",
+    name: "Repos with no compose file",
+    description: "Missing compose.yml in the Tier-3 file snapshot",
+    empty: "Every repo with Tier-3 data has a compose.yml.",
+    isKnown: hasTier3Data,
+    unknownLabel: "without Tier-3 file data",
+    refreshHint: "Run Sync to fetch README.md, AGENTS.md, and compose.yml for active repos.",
+    matches: (repo) => repo.tier3?.composeYml === null,
+  },
+  {
+    action: "compose-no-altivec",
+    name: "Compose files without altivec-intelligence",
+    description: `compose.yml exists but does not reference ${ALTIVEC_INTELLIGENCE_IMAGE}`,
+    empty: "Every stored compose.yml references altivec-intelligence.",
+    isKnown: hasTier3Data,
+    unknownLabel: "without Tier-3 file data",
+    refreshHint: "Run Sync to fetch README.md, AGENTS.md, and compose.yml for active repos.",
+    matches: (repo) =>
+      repo.tier3?.composeYml !== null &&
+      repo.tier3?.composeYml !== undefined &&
+      !repo.tier3.composeYml.includes(ALTIVEC_INTELLIGENCE_IMAGE),
+  },
+  {
+    action: "main-unprotected",
+    name: "Repos without main branch protection",
+    description: "Branch metadata exists, but main is missing or not protected",
+    empty: "Every repo with branch metadata has a protected main branch.",
+    isKnown: hasBranchData,
+    unknownLabel: "without branch metadata",
+    refreshHint: "Run Sync or Enrich to fetch branch metadata for active repos.",
+    matches: (repo) => mainBranch(repo)?.protected !== true,
+  },
+  {
+    action: "default-branch-not-main",
+    name: "Repos whose default branch is not main",
+    description: "Inventory default branch is not named main",
+    empty: "Every active repo uses main as its default branch.",
+    isKnown: hasInventoryData,
+    unknownLabel: "without inventory data",
+    refreshHint: "Run Sync to refresh repo inventory.",
+    matches: (repo) => repo.defaultBranch !== "main",
+  },
+];
 const MENU_PROMPT_THEME = {
   prefix: "",
   style: {
@@ -101,6 +187,7 @@ export async function runTui(): Promise<void> {
       }
 
       if (action === "sync") await runCommand("Sync", () => syncCommand([]));
+      else if (action === "audit") await auditMenu();
       else if (action === "checkout") await repoCheckoutSearchView();
       else if (action.startsWith("checkout:")) await handleCheckoutSelection(action.slice("checkout:".length));
     }
@@ -315,6 +402,7 @@ function mainMenuChoices(checkouts: [string, CheckoutRecord][]): Array<Choice<Ma
   const choices: Array<Choice<MainAction> | Separator> = [
     menuSection("Actions"),
     { value: "sync", name: "Sync", description: "Inventory, mirrors, stale metadata" },
+    { value: "audit", name: "Audit", description: "Repo file hygiene reports" },
     { value: "checkout", name: "Checkout", description: "New working copy" },
     menuSection(checkouts.length ? "Checkouts" : "Checkouts (none)"),
   ];
@@ -449,6 +537,128 @@ function repoSearchText(repo: RepoRecord): string {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+async function auditMenu(): Promise<void> {
+  while (true) {
+    const ctx = await loadTuiContext();
+    const records = auditCandidateRepos(Object.values(ctx.state.repos));
+
+    clear();
+    title("Audit");
+    if (records.length === 0) {
+      console.log("No active repos to audit. Run Sync first.");
+      await pause();
+      return;
+    }
+
+    const tier3Count = records.filter(hasTier3Data).length;
+    const branchCount = records.filter(hasBranchData).length;
+    console.log(
+      `${records.length} active repo(s), ${tier3Count} with Tier-3 file data, ` +
+        `${branchCount} with branch metadata.`,
+    );
+    console.log(color.dim("Audits use stored file bodies and branch metadata from Sync/Enrich."));
+    console.log("");
+
+    let action: AuditAction;
+    try {
+      action = await selectPrompt<AuditAction>({
+        message: "Choose audit",
+        pageSize: 8,
+        choices: auditMenuChoices(records),
+      });
+    } catch (err) {
+      if (isBackSignal(err)) return;
+      throw err;
+    }
+
+    await showAuditReport(action);
+  }
+}
+
+function auditMenuChoices(records: RepoRecord[]): Choice<AuditAction>[] {
+  return AUDITS.map((audit) => {
+    const result = runAudit(audit, records);
+    return {
+      value: audit.action,
+      name: `${audit.name} (${result.matches.length})`,
+      description: audit.description,
+      short: audit.name,
+    };
+  });
+}
+
+async function showAuditReport(action: AuditAction): Promise<void> {
+  const audit = auditDefinition(action);
+  const ctx = await loadTuiContext();
+  const records = auditCandidateRepos(Object.values(ctx.state.repos));
+  const result = runAudit(audit, records);
+
+  clear();
+  title(audit.name);
+  console.log(`${result.matches.length} repo(s) matched out of ${records.length} active repo(s).`);
+  console.log(color.dim(audit.description));
+  console.log("");
+
+  if (result.matches.length === 0) {
+    console.log(audit.empty);
+  } else {
+    printAuditRepoList(result.matches);
+  }
+
+  if (result.unknown.length > 0) {
+    console.log("");
+    console.log(color.warn(`Skipped ${result.unknown.length} repo(s) ${audit.unknownLabel}.`));
+    console.log(color.dim(audit.refreshHint));
+    const examples = result.unknown.slice(0, 5).map((repo) => repo.fullName).join(", ");
+    console.log(color.dim(`Examples: ${examples}${result.unknown.length > 5 ? ", ..." : ""}`));
+  }
+
+  console.log("");
+  await pause();
+}
+
+function auditDefinition(action: AuditAction): AuditDefinition {
+  const audit = AUDITS.find((candidate) => candidate.action === action);
+  if (!audit) throw new Error(`Unknown audit "${action}".`);
+  return audit;
+}
+
+function runAudit(
+  audit: AuditDefinition,
+  records: RepoRecord[],
+): { matches: RepoRecord[]; unknown: RepoRecord[] } {
+  const known = records.filter(audit.isKnown);
+  return {
+    matches: known.filter(audit.matches).sort(compareReposForCheckout),
+    unknown: records.filter((repo) => !audit.isKnown(repo)).sort(compareReposForCheckout),
+  };
+}
+
+function auditCandidateRepos(records: RepoRecord[]): RepoRecord[] {
+  return records.filter((repo) => !repo.orphaned && !repo.archived).sort(compareReposForCheckout);
+}
+
+function hasInventoryData(_repo: RepoRecord): boolean {
+  return true;
+}
+
+function hasTier3Data(repo: RepoRecord): boolean {
+  return repo.tier3 !== null;
+}
+
+function hasBranchData(repo: RepoRecord): boolean {
+  return repo.enrichment?.branches !== null && repo.enrichment?.branches !== undefined;
+}
+
+function mainBranch(repo: RepoRecord): { protected: boolean } | undefined {
+  return repo.enrichment?.branches?.find((branch) => branch.name === "main");
+}
+
+function printAuditRepoList(records: RepoRecord[]): void {
+  const layout = repoListLayout(hasSingleOwner(records));
+  for (const repo of records) console.log(repoListLine(repo, layout));
 }
 
 function checkoutChoice(name: string, checkout: CheckoutRecord): Choice<MainAction> {

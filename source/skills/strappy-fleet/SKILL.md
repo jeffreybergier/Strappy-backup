@@ -1,6 +1,6 @@
 ---
 name: strappy-fleet
-description: "Use when Codex needs to inspect or operate a Strappy backup fleet: querying Strappy's SQLite database, answering questions about mirrored GitHub repositories, checking sync/enrichment/audit/checkout state, or using the Strappy CLI for sync, enrich, checkout, scan, cleanup, auth, list, info, and status workflows."
+description: "Use when Codex needs to inspect or operate a Strappy backup fleet: querying Strappy's SQLite database, answering questions about mirrored GitHub repositories, checking sync/enrichment/audit/checkout state, or using the Strappy CLI/TUI for sync, enrich, audit reports, checkout, scan, cleanup, auth, list, info, and status workflows."
 ---
 
 # Strappy Fleet
@@ -43,10 +43,17 @@ you need table schemas, query examples, or CLI command semantics.
 1. Start with `npm run strappy -- status` to verify home path, auth, inventory size, failures, and checkout count.
 2. For questions like "which repos..." or "what needs attention...", query SQLite read-only.
 3. For one-repo details, use `npm run strappy -- info owner/repo` or `--json`.
-4. For stale data, use CLI updates:
+4. For audit questions, use the SQLite audit recipes in the reference. In an interactive TTY, the TUI `Audit` action shows the same first-pass checks:
+   - repos with no `README.md`
+   - repos with no `AGENTS.md`
+   - repos with no compose file
+   - compose files not referencing `ghcr.io/jeffreybergier/altivec-intelligence`
+   - repos without protected `main`
+   - repos whose default branch is not `main`
+5. For stale data, use CLI updates:
    - `npm run strappy -- sync [repo...]`
    - `npm run strappy -- enrich [repo...]`
-5. For working copies, use CLI checkout flows:
+6. For working copies, use CLI checkout flows:
    - `npm run strappy -- checkout <repo> [--branch B] [--name N]`
    - `npm run strappy -- checkouts [--dirty|--unpushed|--json]`
    - `npm run strappy -- scan-checkouts [name|--all]`
