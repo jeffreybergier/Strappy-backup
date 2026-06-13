@@ -57,10 +57,9 @@ cp .env.example .env      # then edit .env and paste your GitHub PAT
 
 Provide the token in any of these ways (checked in this order):
 
-1. `STRAPPY_GITHUB_TOKEN` in `.env` (recommended)
-2. `GITHUB_TOKEN` in the environment
-3. `strappy auth` (stores it at `$STRAPPY_HOME/secrets/github-token`, chmod 600)
-4. `gh auth token`, if the GitHub CLI is installed
+1. `GITHUB_TOKEN` in `.env` or the environment
+2. `strappy auth` (stores it at `$STRAPPY_HOME/secrets/github-token`, chmod 600)
+3. `gh auth token`, if the GitHub CLI is installed
 
 ## Usage
 
@@ -96,13 +95,13 @@ and forwards any args you pass after the service name:
   strappy:
     image: <your-image-with-node-and-git>
     env_file:
-      - ./source/.env          # STRAPPY_HOME=/repo/backups + STRAPPY_GITHUB_TOKEN
+      - ./.env                 # STRAPPY_HOME=/repo/backups + GITHUB_TOKEN
     volumes:
       - ./source:/repo/source
       - ./backups:/repo/backups
       - ./checkouts:/repo/checkouts
     working_dir: /repo/source
-    entrypoint: /bin/bash -lc 'npm install --no-fund --no-audit && exec npm run --silent strappy -- "$@"' bash
+    entrypoint: /bin/bash -lc 'npm install --no-fund --no-audit --loglevel=error >/dev/null && exec npm run --silent strappy -- "$@"' bash
     stdin_open: true
     tty: true
 ```

@@ -14,7 +14,7 @@ import {
 } from "@inquirer/core";
 import { confirm, input, search, select } from "@inquirer/prompts";
 import { execa } from "execa";
-import { resolveToken, type ResolvedToken, type TokenSource } from "./auth.js";
+import { resolveToken, type ResolvedToken } from "./auth.js";
 import {
   checkoutStatus,
   cleanupCheckouts,
@@ -58,9 +58,6 @@ interface Choice<Value> {
 }
 
 interface TuiContext {
-  paths: Paths;
-  config: StrappyConfig;
-  checkoutRoot: string;
   state: StrappyState;
   auth: AuthDashboardStatus;
 }
@@ -68,7 +65,6 @@ interface TuiContext {
 interface DashboardSnapshot {
   ctx: TuiContext;
   checkouts: [string, CheckoutRecord][];
-  refreshedAt: Date;
 }
 
 type DashboardPromptResult =
@@ -99,7 +95,6 @@ type DashboardMode =
 
 interface AuthDashboardStatus {
   label: string;
-  detail?: string;
   attention?: string;
 }
 
@@ -114,6 +109,12 @@ interface AuditDefinition {
   matches: (repo: RepoRecord) => boolean;
 }
 
+interface DashboardRow {
+  label: string;
+  value: string;
+  note?: string;
+}
+
 const ESCAPE_ABORT_REASON = "strappy:escape-back";
 const DASHBOARD_REFRESH_MS = 60_000;
 const AUTO_SYNC_MS = 4 * 60 * 60_000;
@@ -121,6 +122,8 @@ const SYNC_LOG_RETURN_DELAY_MS = 750;
 const SYNC_LOG_MAX_LINES = 500;
 const AUTH_STATUS_CACHE_MS = 5 * 60_000;
 const AUTH_STATUS_TIMEOUT_MS = 2_500;
+const DASHBOARD_LABEL_WIDTH = 18;
+const TUI_TITLE = "🍆ＳＴＲＡＰＰＹ💅ＦＬＥＥＴ🚢";
 const ALTIVEC_INTELLIGENCE_IMAGE = "ghcr.io/jeffreybergier/altivec-intelligence";
 const AUDITS: readonly AuditDefinition[] = [
   {
@@ -194,8 +197,8 @@ const MENU_PROMPT_THEME = {
   },
 };
 const BACK_INSTRUCTIONS = {
-  navigation: "↑↓ navigate • ⏎ select • ␛ back",
-  pager: "↑↓ navigate • ⏎ select • ␛ back",
+  navigation: "↑↓ navigate ⏎ select ␛ back",
+  pager: "↑↓ navigate ⏎ select ␛ back",
 };
 let authStatusCache: { key: string; checkedAt: number; status: AuthDashboardStatus } | null = null;
 
@@ -407,7 +410,7 @@ function renderDashboardPrompt(state: DashboardPromptState): string {
     "",
     state.mode.type === "sync"
       ? color.dim("Sync in progress. Menu will unlock when the tail completes.")
-      : color.dim("↑↓ navigate • Enter select • Esc exit"),
+      : color.dim("↑↓ navigate ⏎ select ␛ exit"),
   ].join("\n");
 }
 
@@ -417,8 +420,8 @@ function syncDashboardLines(mode: Extract<DashboardMode, { type: "sync" }>): str
   const width = screenWidth();
   const stateLabel = mode.status === "running" ? "running" : "complete";
   return [
-    color.bold("STRAPPY"),
-    color.dim(`${mode.label} • ${stateLabel} • ${clock(new Date())}`),
+    color.bold(TUI_TITLE),
+    color.dim(`${mode.label} | ${stateLabel} | ${clock(new Date())}`),
     rule(),
     ...mode.lines.slice(-maxLines).map((line) => fitText(line, width)),
     rule(),
@@ -434,42 +437,49 @@ function dashboardLines(snapshot: DashboardSnapshot, nextAutoSyncAt: number): st
   const failures = repos.filter((r) => r.lastSyncOk === false);
   const orphaned = repos.filter((r) => r.orphaned);
   const totalKb = repos.reduce((sum, r) => sum + (r.sizeKb ?? 0), 0);
+  const fleetRows: DashboardRow[] = [
+    { label: "Mirrors", value: `${repos.length} (${humanSize(totalKb)})` },
+    { label: "Checkouts", value: String(snapshot.checkouts.length) },
+  ];
+  const syncRows: DashboardRow[] = [
+    { label: "Auth", value: authSummary(ctx.auth) },
+    { label: "Last Sync", value: timeAgo(ctx.state.lastInventoryAt) },
+    { label: "Next Sync", value: timeUntil(nextAutoSyncAt) },
+    { label: "Sync Timer", value: `${AUTO_SYNC_MS / 3600_000}h` },
+    { label: "Checkout Timer", value: `${DASHBOARD_REFRESH_MS / 1000}s` },
+  ];
   const lines = [
-    color.bold("STRAPPY"),
-    color.dim(
-      `Live fleet dashboard • refreshed ${clock(snapshot.refreshedAt)} • ` +
-        `checkout scan ${DASHBOARD_REFRESH_MS / 1000}s • sync ${AUTO_SYNC_MS / 3600_000}h`,
-    ),
-    rule(),
-    dashboardRowText("Mirrors", `${repos.length} (${humanSize(totalKb)})`),
-    dashboardRowText("Last sync", timeAgo(ctx.state.lastInventoryAt)),
-    dashboardRowText("Next sync", timeUntil(nextAutoSyncAt)),
-    dashboardRowText("Checkouts", String(snapshot.checkouts.length)),
-    dashboardRowText("Auth", authSummary(ctx.auth)),
-    dashboardRowText("Failures", String(failures.length)),
-    dashboardRowText("Orphaned", String(orphaned.length)),
+    color.bold(TUI_TITLE),
+    color.bold("Sync"),
+    ...syncRows.map((row) => dashboardRowText(row.label, row.value, row.note)),
     "",
-    color.dim(`Checkout root  ${ctx.checkoutRoot}`),
-    color.dim(`STRAPPY_HOME   ${ctx.paths.home}`),
-    "",
-    color.bold("Needs Attention"),
+    color.bold("Fleet"),
+    ...fleetRows.map((row) => dashboardRowText(row.label, row.value, row.note)),
   ];
 
   const needsAttention = [
     ctx.auth.attention ?? null,
-    failures.length ? `danger  ${failures.length} mirror sync failure(s)` : null,
-    orphaned.length ? `warn    ${orphaned.length} orphaned mirror(s) kept locally` : null,
+    failures.length ? `danger  ${failures.length} repo(s) had mirror sync errors` : null,
+    orphaned.length ? `warn    ${orphaned.length} orphaned mirror(s); repo absent from GitHub inventory` : null,
     repos.length === 0 ? "info    No repo inventory yet; run Sync" : null,
-    snapshot.checkouts.length === 0 ? "info    No checkouts yet" : null,
   ].filter((line): line is string => line !== null);
 
-  if (needsAttention.length === 0) lines.push("  none");
-  else for (const line of needsAttention) lines.push(`  ${attentionLine(line)}`);
+  if (needsAttention.length > 0) {
+    lines.push("", color.bold("Needs Attention"));
+    for (const line of needsAttention) lines.push(attentionLine(line));
+  }
 
   if (failures.length) {
-    lines.push("", color.bold("Recent Failures"));
+    lines.push("", color.bold("Recent Sync Errors"));
     for (const repo of failures.slice(0, 5)) {
-      lines.push(`  ${repo.fullName}: ${repo.lastError ?? "unknown error"}`);
+      lines.push(`${repo.fullName}: ${repo.lastError ?? "unknown error"}`);
+    }
+  }
+
+  if (orphaned.length) {
+    lines.push("", color.bold("Orphaned Mirrors"));
+    for (const repo of orphaned.slice(0, 5)) {
+      lines.push(repo.fullName);
     }
   }
 
@@ -482,10 +492,10 @@ function dashboardMenuLines(state: DashboardPromptState): string[] {
   const start = Math.max(0, Math.min(state.active - Math.floor(pageSize / 2), choices.length - pageSize));
   const end = Math.min(choices.length, start + pageSize);
   const lines: string[] = [];
-  const sectionIndent = "  ";
-  const itemIndent = "    ";
+  const sectionIndent = "";
+  const itemIndent = "";
 
-  if (start > 0) lines.push(color.dim(`  ... ${start} more above`));
+  if (start > 0) lines.push(color.dim(`... ${start} more above`));
   for (let index = start; index < end; index++) {
     const choice = choices[index];
     if (Separator.isSeparator(choice)) {
@@ -498,12 +508,7 @@ function dashboardMenuLines(state: DashboardPromptState): string[] {
     const line = `${itemIndent}${marker} ${name}`;
     lines.push(index === state.active ? color.info(line) : line);
   }
-  if (end < choices.length) lines.push(color.dim(`  ... ${choices.length - end} more below`));
-
-  const active = activeDashboardChoice(state);
-  if (active && !Separator.isSeparator(active) && active.description) {
-    lines.push("", color.dim(`${itemIndent}${active.description}`));
-  }
+  if (end < choices.length) lines.push(color.dim(`... ${choices.length - end} more below`));
 
   return lines;
 }
@@ -576,15 +581,10 @@ async function runDashboardPromptSync(
 
 async function loadTuiContext(): Promise<TuiContext> {
   const paths = getPaths();
-  const config = await loadConfig(paths);
-  const checkoutRoot = resolveCheckoutRoot(paths, config);
   const store = openStore(paths);
   const state = await store.read();
   const auth = await dashboardAuthStatus(paths);
   return {
-    paths,
-    config,
-    checkoutRoot,
     state,
     auth,
   };
@@ -596,7 +596,6 @@ async function loadDashboardSnapshot(scanCheckouts: boolean): Promise<DashboardS
   return {
     ctx,
     checkouts: scanned ?? Object.entries(ctx.state.checkouts).sort((a, b) => a[0].localeCompare(b[0])),
-    refreshedAt: new Date(),
   };
 }
 
@@ -605,7 +604,6 @@ async function dashboardAuthStatus(paths: Paths): Promise<AuthDashboardStatus> {
   if (!resolved) {
     return {
       label: color.danger("not signed in"),
-      detail: "run `strappy auth`",
       attention: "danger  GitHub auth is not configured",
     };
   }
@@ -626,20 +624,17 @@ async function checkAuth(resolved: ResolvedToken): Promise<AuthDashboardStatus> 
     const login = await withTimeout(whoami(makeOctokit(resolved.token)), AUTH_STATUS_TIMEOUT_MS);
     return {
       label: color.info(`@${login}`),
-      detail: tokenSourceLabel(resolved.source),
     };
   } catch (err) {
     if (err instanceof TimeoutError) {
       return {
-        label: "configured",
-        detail: `${tokenSourceLabel(resolved.source)}, check timed out`,
+        label: "configured, check timed out",
       };
     }
 
     const message = err instanceof Error ? err.message : String(err);
     return {
       label: color.danger("invalid"),
-      detail: tokenSourceLabel(resolved.source),
       attention: `danger  GitHub auth failed: ${message}`,
     };
   }
@@ -665,20 +660,7 @@ function authCacheKey(resolved: ResolvedToken): string {
 }
 
 function authSummary(status: AuthDashboardStatus): string {
-  return status.detail ? `${status.label} (${status.detail})` : status.label;
-}
-
-function tokenSourceLabel(source: TokenSource): string {
-  switch (source) {
-    case "env:STRAPPY_GITHUB_TOKEN":
-      return "STRAPPY_GITHUB_TOKEN";
-    case "env:GITHUB_TOKEN":
-      return "GITHUB_TOKEN";
-    case "file":
-      return "saved token";
-    case "gh-cli":
-      return "GitHub CLI";
-  }
+  return status.label;
 }
 
 async function ensureCheckoutRoot(): Promise<void> {
@@ -696,9 +678,9 @@ async function scanCheckoutEntries(): Promise<[string, CheckoutRecord][]> {
 function mainMenuChoices(checkouts: [string, CheckoutRecord][]): Array<Choice<MainAction> | Separator> {
   const choices: Array<Choice<MainAction> | Separator> = [
     menuSection("Actions"),
-    { value: "sync", name: "Sync", description: "Inventory, mirrors, stale metadata" },
-    { value: "audit", name: "Audit", description: "Repo file hygiene reports" },
-    { value: "checkout", name: "Checkout", description: "New working copy" },
+    { value: "sync", name: "Sync" },
+    { value: "audit", name: "Audit" },
+    { value: "checkout", name: "Checkout" },
     menuSection(checkouts.length ? "Checkouts" : "Checkouts (none)"),
   ];
 
@@ -995,7 +977,6 @@ function checkoutChoice(name: string, checkout: CheckoutRecord): Choice<MainActi
   return {
     value: `checkout:${name}`,
     name: checkoutMenuLine(name, checkout),
-    description: `${checkout.repo}  ${checkout.path}`,
     short: name,
   };
 }
@@ -1217,7 +1198,7 @@ function printCleanupResult(result: {
   }
 }
 
-async function pause(message = "Press Enter to continue"): Promise<void> {
+async function pause(message = "Press ⏎ to continue"): Promise<void> {
   try {
     await inputPrompt({ message });
   } catch (err) {
@@ -1361,13 +1342,18 @@ function timeUntil(timestamp: number): string {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
 
-  if (hours > 0 && remainingMinutes > 0) return `in ${hours}h ${remainingMinutes}m`;
-  if (hours > 0) return `in ${hours}h`;
-  return `in ${minutes}m`;
+  if (hours > 0 && remainingMinutes > 0) return `${hours}h ${remainingMinutes}m`;
+  if (hours > 0) return `${hours}h`;
+  return `${minutes}m`;
 }
 
-function dashboardRowText(label: string, value: string): string {
-  return `${color.dim(label.padEnd(12))}${value}`;
+function dashboardRowText(label: string, value: string, note?: string): string {
+  let line = `${color.dim(label.padEnd(DASHBOARD_LABEL_WIDTH))}${value}`;
+  if (!note) return line;
+
+  const noteWidth = screenWidth() - DASHBOARD_LABEL_WIDTH - value.length - 2;
+  if (noteWidth >= 12) line += `  ${color.dim(fitText(note, noteWidth))}`;
+  return line;
 }
 
 function section(text: string): void {
@@ -1375,8 +1361,13 @@ function section(text: string): void {
 }
 
 function attentionLine(line: string): string {
-  if (line.startsWith("danger")) return color.danger(line);
-  if (line.startsWith("warn")) return color.warn(line);
-  if (line.startsWith("info")) return color.info(line);
+  const match = /^(danger|warn|info)\s+(.*)$/.exec(line);
+  if (!match) return line;
+
+  const [, level, message] = match;
+  const formatted = `${level === "info" ? "i" : "!"} ${message.trim()}`;
+  if (level === "danger") return color.danger(formatted);
+  if (level === "warn") return color.warn(formatted);
+  if (level === "info") return color.info(formatted);
   return line;
 }

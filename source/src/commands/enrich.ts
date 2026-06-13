@@ -17,7 +17,7 @@ export async function enrichCommand(repos: string[], opts: EnrichCommandOptions)
   const resolved = await resolveToken(paths);
   if (!resolved) {
     throw new Error(
-      "No GitHub token found. Set STRAPPY_GITHUB_TOKEN in .env, or run `strappy auth`.",
+      "No GitHub token found. Set GITHUB_TOKEN in .env, or run `strappy auth`.",
     );
   }
 

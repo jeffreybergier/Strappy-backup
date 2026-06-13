@@ -42,7 +42,7 @@ export async function authCheck(): Promise<void> {
   const paths = getPaths();
   const resolved = await resolveToken(paths);
   if (!resolved) {
-    console.log("No token found. Set STRAPPY_GITHUB_TOKEN, or run `strappy auth`.");
+    console.log("No token found. Set GITHUB_TOKEN, or run `strappy auth`.");
     return;
   }
   try {

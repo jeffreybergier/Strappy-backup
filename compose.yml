@@ -7,30 +7,30 @@ services:
       - IS_SANDBOX=1
     volumes:
       - ~/.altivec:/root
-      - ./source:/repo/source
-      - ./backups:/repo/backups
-      - ./checkouts:/repo/checkouts
-    working_dir: /repo/source
+      - .:/repo
+    working_dir: /repo
     entrypoint: /bin/bash
     command: -lc "altivec-chooser"
 
   shell:
     image: ghcr.io/jeffreybergier/altivec-intelligence:latest
+    environment:
+      - STRAPPY_HOME=${STRAPPY_HOME:-/repo/backups}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     volumes:
       - ~/.strappy:/root
-      - ./source:/repo/source
-      - ./backups:/repo/backups
-      - ./checkouts:/repo/checkouts
+      - .:/repo
     working_dir: /repo/source
 
   strappy:
     image: ghcr.io/jeffreybergier/altivec-intelligence:latest
     stdin_open: true
     tty: true
+    environment:
+      - STRAPPY_HOME=${STRAPPY_HOME:-/repo/backups}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     volumes:
       - ~/.strappy:/root
-      - ./source:/repo/source
-      - ./backups:/repo/backups
-      - ./checkouts:/repo/checkouts
+      - .:/repo
     working_dir: /repo/source
-    entrypoint: /bin/bash -lc 'npm install --no-fund --no-audit && exec npm run --silent strappy -- "$@"' bash
+    entrypoint: /bin/bash -lc 'npm install --no-fund --no-audit --loglevel=error >/dev/null && exec npm run --silent strappy -- "$@"' bash

@@ -35,7 +35,7 @@ export async function runFullSync(opts: FullSyncOptions = {}): Promise<FullSyncR
   const resolved = await resolveToken(paths);
   if (!resolved) {
     throw new Error(
-      "No GitHub token found. Set STRAPPY_GITHUB_TOKEN in .env, or run `strappy auth`.",
+      "No GitHub token found. Set GITHUB_TOKEN in .env, or run `strappy auth`.",
     );
   }
 
