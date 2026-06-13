@@ -1,7 +1,18 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import * as readline from "node:readline";
-import { confirm, input, search, select, Separator } from "@inquirer/prompts";
+import {
+  createPrompt,
+  isDownKey,
+  isEnterKey,
+  isUpKey,
+  Separator,
+  useEffect,
+  useKeypress,
+  useRef,
+  useState,
+} from "@inquirer/core";
+import { confirm, input, search, select } from "@inquirer/prompts";
 import { execa } from "execa";
 import { resolveToken, type ResolvedToken, type TokenSource } from "./auth.js";
 import {
@@ -13,11 +24,12 @@ import {
   scanCheckouts,
   unsafeReason,
 } from "./checkouts.js";
-import { syncCommand } from "./commands/sync.js";
+import { runFullSync } from "./commands/sync.js";
 import { loadConfig, type StrappyConfig } from "./config.js";
 import { openStore } from "./db.js";
 import { humanSize, timeAgo } from "./format.js";
 import { makeOctokit, whoami } from "./github.js";
+import { Logger } from "./logger.js";
 import { getPaths, splitFullName, type Paths } from "./paths.js";
 import type { CheckoutRecord, RepoRecord, StrappyState } from "./state.js";
 
@@ -53,6 +65,38 @@ interface TuiContext {
   auth: AuthDashboardStatus;
 }
 
+interface DashboardSnapshot {
+  ctx: TuiContext;
+  checkouts: [string, CheckoutRecord][];
+  refreshedAt: Date;
+}
+
+type DashboardPromptResult =
+  | { type: "exit"; nextAutoSyncAt: number }
+  | { type: "action"; action: Exclude<MainAction, "sync">; nextAutoSyncAt: number };
+
+interface DashboardPromptConfig {
+  snapshot: DashboardSnapshot;
+  nextAutoSyncAt: number;
+  loadSnapshot: (scanCheckouts: boolean) => Promise<DashboardSnapshot>;
+  runSync: (
+    label: string,
+    source: string,
+    onLine: (line?: string) => void,
+  ) => Promise<{ failed: number }>;
+}
+
+interface DashboardPromptState {
+  snapshot: DashboardSnapshot;
+  nextAutoSyncAt: number;
+  active: number;
+  mode: DashboardMode;
+}
+
+type DashboardMode =
+  | { type: "dashboard" }
+  | { type: "sync"; label: string; lines: string[]; status: "running" | "done" };
+
 interface AuthDashboardStatus {
   label: string;
   detail?: string;
@@ -71,8 +115,10 @@ interface AuditDefinition {
 }
 
 const ESCAPE_ABORT_REASON = "strappy:escape-back";
-const DASHBOARD_REFRESH_ABORT_REASON = "strappy:dashboard-refresh";
 const DASHBOARD_REFRESH_MS = 60_000;
+const AUTO_SYNC_MS = 4 * 60 * 60_000;
+const SYNC_LOG_RETURN_DELAY_MS = 750;
+const SYNC_LOG_MAX_LINES = 500;
 const AUTH_STATUS_CACHE_MS = 5 * 60_000;
 const AUTH_STATUS_TIMEOUT_MS = 2_500;
 const ALTIVEC_INTELLIGENCE_IMAGE = "ghcr.io/jeffreybergier/altivec-intelligence";
@@ -157,10 +203,6 @@ class BackSignal extends Error {
   override name = "BackSignal";
 }
 
-class DashboardRefreshSignal extends Error {
-  override name = "DashboardRefreshSignal";
-}
-
 class TimeoutError extends Error {
   override name = "TimeoutError";
 }
@@ -168,26 +210,21 @@ class TimeoutError extends Error {
 export async function runTui(): Promise<void> {
   try {
     await ensureCheckoutRoot();
+    let nextAutoSyncAt = scheduleNextAutoSync();
 
     while (true) {
-      await showDashboard();
-      const checkouts = await scanCheckoutEntries();
+      const result = await dashboardPrompt({
+        snapshot: await loadDashboardSnapshot(true),
+        nextAutoSyncAt,
+        loadSnapshot: loadDashboardSnapshot,
+        runSync: runDashboardPromptSync,
+      });
 
-      let action: MainAction;
-      try {
-        action = await selectPrompt<MainAction>({
-          message: "Menu",
-          pageSize: menuPageSize(),
-          choices: mainMenuChoices(checkouts),
-        }, { refreshMs: DASHBOARD_REFRESH_MS });
-      } catch (err) {
-        if (isDashboardRefreshSignal(err)) continue;
-        if (isBackSignal(err)) return;
-        throw err;
-      }
+      nextAutoSyncAt = result.nextAutoSyncAt;
+      if (result.type === "exit") return;
 
-      if (action === "sync") await runCommand("Sync", () => syncCommand([]));
-      else if (action === "audit") await auditMenu();
+      const action = result.action;
+      if (action === "audit") await auditMenu();
       else if (action === "checkout") await repoCheckoutSearchView();
       else if (action.startsWith("checkout:")) await handleCheckoutSelection(action.slice("checkout:".length));
     }
@@ -197,50 +234,278 @@ export async function runTui(): Promise<void> {
   }
 }
 
-async function showDashboard(): Promise<void> {
-  const ctx = await loadTuiContext();
+const dashboardPrompt = createPrompt<DashboardPromptResult, DashboardPromptConfig>((config, done) => {
+  const [, setVersion] = useState(0);
+  const versionRef = useRef(0);
+  const renderTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const returnTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const stateRef = useRef<DashboardPromptState>({
+    snapshot: config.snapshot,
+    nextAutoSyncAt: config.nextAutoSyncAt,
+    active: firstSelectableIndex(mainMenuChoices(config.snapshot.checkouts)),
+    mode: { type: "dashboard" },
+  });
+
+  const renderNow = () => {
+    versionRef.current += 1;
+    setVersion(versionRef.current);
+  };
+
+  const requestRender = () => {
+    if (renderTimerRef.current) return;
+    renderTimerRef.current = setTimeout(() => {
+      renderTimerRef.current = null;
+      renderNow();
+    }, 50);
+  };
+
+  const appendSyncLine = (line = "") => {
+    const mode = stateRef.current.mode;
+    if (mode.type !== "sync") return;
+    for (const part of line.split(/\r?\n/)) mode.lines.push(part);
+    if (mode.lines.length > SYNC_LOG_MAX_LINES) {
+      mode.lines.splice(0, mode.lines.length - SYNC_LOG_MAX_LINES);
+    }
+    requestRender();
+  };
+
+  const refreshSnapshot = async (scanCheckouts: boolean) => {
+    if (stateRef.current.mode.type !== "dashboard") return;
+    const snapshot = await config.loadSnapshot(scanCheckouts);
+    if (stateRef.current.mode.type !== "dashboard") return;
+    stateRef.current.snapshot = snapshot;
+    normalizeDashboardActive(stateRef.current);
+    renderNow();
+  };
+
+  const returnToDashboard = async () => {
+    stateRef.current.snapshot = await config.loadSnapshot(false);
+    stateRef.current.mode = { type: "dashboard" };
+    normalizeDashboardActive(stateRef.current);
+    renderNow();
+  };
+
+  const beginSync = (label: string, source: string) => {
+    if (stateRef.current.mode.type === "sync") return;
+    if (returnTimerRef.current) clearTimeout(returnTimerRef.current);
+
+    stateRef.current.mode = {
+      type: "sync",
+      label,
+      lines: [`${label} started at ${clock(new Date())}`],
+      status: "running",
+    };
+    renderNow();
+
+    void config
+      .runSync(label, source, appendSyncLine)
+      .then((result) => {
+        const mode = stateRef.current.mode;
+        if (mode.type === "sync") {
+          mode.status = "done";
+          mode.lines.push("");
+          mode.lines.push(
+            result.failed > 0
+              ? `${label} finished with ${result.failed} failure(s).`
+              : `${label} finished successfully.`,
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        const mode = stateRef.current.mode;
+        if (mode.type === "sync") {
+          mode.status = "done";
+          mode.lines.push("");
+          mode.lines.push(`Error: ${message}`);
+          mode.lines.push(`${label} failed.`);
+        }
+      })
+      .finally(() => {
+        stateRef.current.nextAutoSyncAt = scheduleNextAutoSync();
+        renderNow();
+        returnTimerRef.current = setTimeout(() => {
+          returnTimerRef.current = null;
+          void returnToDashboard();
+        }, SYNC_LOG_RETURN_DELAY_MS);
+      });
+  };
+
+  useEffect(() => {
+    const refreshTimer = setInterval(() => {
+      void refreshSnapshot(true);
+    }, DASHBOARD_REFRESH_MS);
+
+    return () => {
+      clearInterval(refreshTimer);
+      if (renderTimerRef.current) clearTimeout(renderTimerRef.current);
+      if (returnTimerRef.current) clearTimeout(returnTimerRef.current);
+    };
+  }, []);
+
+  const modeType = stateRef.current.mode.type;
+  const nextAutoSyncAt = stateRef.current.nextAutoSyncAt;
+  useEffect(() => {
+    if (stateRef.current.mode.type !== "dashboard") return;
+    const timer = setTimeout(() => {
+      beginSync("Automatic Sync", "tui-auto-sync");
+    }, Math.max(0, nextAutoSyncAt - Date.now()));
+
+    return () => clearTimeout(timer);
+  }, [modeType, nextAutoSyncAt]);
+
+  useKeypress((key, rl) => {
+    if (stateRef.current.mode.type === "sync") {
+      rl.clearLine(0);
+      return;
+    }
+
+    if (key.name === "escape") {
+      done({ type: "exit", nextAutoSyncAt: stateRef.current.nextAutoSyncAt });
+      return;
+    }
+
+    if (isUpKey(key) || isDownKey(key)) {
+      rl.clearLine(0);
+      moveDashboardActive(stateRef.current, isUpKey(key) ? -1 : 1);
+      renderNow();
+      return;
+    }
+
+    if (isEnterKey(key)) {
+      const choice = activeDashboardChoice(stateRef.current);
+      if (!choice || Separator.isSeparator(choice)) return;
+      if (choice.value === "sync") beginSync("Sync", "tui-sync");
+      else {
+        done({
+          type: "action",
+          action: choice.value,
+          nextAutoSyncAt: stateRef.current.nextAutoSyncAt,
+        });
+      }
+      return;
+    }
+
+    rl.clearLine(0);
+  });
+
+  return renderDashboardPrompt(stateRef.current);
+});
+
+function renderDashboardPrompt(state: DashboardPromptState): string {
+  normalizeDashboardActive(state);
+  const topLines =
+    state.mode.type === "sync"
+      ? syncDashboardLines(state.mode)
+      : dashboardLines(state.snapshot, state.nextAutoSyncAt);
+
+  return [
+    ...topLines,
+    "",
+    color.bold("Menu"),
+    ...dashboardMenuLines(state),
+    "",
+    state.mode.type === "sync"
+      ? color.dim("Sync in progress. Menu will unlock when the tail completes.")
+      : color.dim("↑↓ navigate • Enter select • Esc exit"),
+  ].join("\n");
+}
+
+function syncDashboardLines(mode: Extract<DashboardMode, { type: "sync" }>): string[] {
+  const menuReserve = syncMenuPageSize() + 7;
+  const maxLines = Math.max(6, (process.stdout.rows ?? 24) - menuReserve);
+  const width = screenWidth();
+  const stateLabel = mode.status === "running" ? "running" : "complete";
+  return [
+    color.bold("STRAPPY"),
+    color.dim(`${mode.label} • ${stateLabel} • ${clock(new Date())}`),
+    rule(),
+    ...mode.lines.slice(-maxLines).map((line) => fitText(line, width)),
+    rule(),
+    mode.status === "running"
+      ? color.dim("Sync in progress...")
+      : color.dim("Returning to dashboard..."),
+  ];
+}
+
+function dashboardLines(snapshot: DashboardSnapshot, nextAutoSyncAt: number): string[] {
+  const ctx = snapshot.ctx;
   const repos = Object.values(ctx.state.repos);
   const failures = repos.filter((r) => r.lastSyncOk === false);
   const orphaned = repos.filter((r) => r.orphaned);
-  const checkouts = Object.entries(ctx.state.checkouts);
   const totalKb = repos.reduce((sum, r) => sum + (r.sizeKb ?? 0), 0);
-
-  clear();
-  console.log(color.bold("STRAPPY"));
-  console.log(color.dim(`Live fleet dashboard • refreshed ${clock(new Date())} • auto ${DASHBOARD_REFRESH_MS / 1000}s`));
-  console.log(rule());
-  dashboardRow("Mirrors", `${repos.length} (${humanSize(totalKb)})`);
-  dashboardRow("Last sync", timeAgo(ctx.state.lastInventoryAt));
-  dashboardRow("Checkouts", String(checkouts.length));
-  dashboardRow("Auth", authSummary(ctx.auth));
-  dashboardRow("Failures", String(failures.length));
-  dashboardRow("Orphaned", String(orphaned.length));
-  console.log("");
-  console.log(color.dim(`Checkout root  ${ctx.checkoutRoot}`));
-  console.log(color.dim(`STRAPPY_HOME   ${ctx.paths.home}`));
-  console.log("");
+  const lines = [
+    color.bold("STRAPPY"),
+    color.dim(
+      `Live fleet dashboard • refreshed ${clock(snapshot.refreshedAt)} • ` +
+        `checkout scan ${DASHBOARD_REFRESH_MS / 1000}s • sync ${AUTO_SYNC_MS / 3600_000}h`,
+    ),
+    rule(),
+    dashboardRowText("Mirrors", `${repos.length} (${humanSize(totalKb)})`),
+    dashboardRowText("Last sync", timeAgo(ctx.state.lastInventoryAt)),
+    dashboardRowText("Next sync", timeUntil(nextAutoSyncAt)),
+    dashboardRowText("Checkouts", String(snapshot.checkouts.length)),
+    dashboardRowText("Auth", authSummary(ctx.auth)),
+    dashboardRowText("Failures", String(failures.length)),
+    dashboardRowText("Orphaned", String(orphaned.length)),
+    "",
+    color.dim(`Checkout root  ${ctx.checkoutRoot}`),
+    color.dim(`STRAPPY_HOME   ${ctx.paths.home}`),
+    "",
+    color.bold("Needs Attention"),
+  ];
 
   const needsAttention = [
     ctx.auth.attention ?? null,
     failures.length ? `danger  ${failures.length} mirror sync failure(s)` : null,
     orphaned.length ? `warn    ${orphaned.length} orphaned mirror(s) kept locally` : null,
     repos.length === 0 ? "info    No repo inventory yet; run Sync" : null,
-    checkouts.length === 0 ? "info    No checkouts yet" : null,
+    snapshot.checkouts.length === 0 ? "info    No checkouts yet" : null,
   ].filter((line): line is string => line !== null);
 
-  section("Needs Attention");
-  if (needsAttention.length === 0) console.log("  none");
-  else for (const line of needsAttention) console.log(`  ${attentionLine(line)}`);
+  if (needsAttention.length === 0) lines.push("  none");
+  else for (const line of needsAttention) lines.push(`  ${attentionLine(line)}`);
 
   if (failures.length) {
-    console.log("");
-    section("Recent Failures");
+    lines.push("", color.bold("Recent Failures"));
     for (const repo of failures.slice(0, 5)) {
-      console.log(`  ${repo.fullName}: ${repo.lastError ?? "unknown error"}`);
+      lines.push(`  ${repo.fullName}: ${repo.lastError ?? "unknown error"}`);
     }
   }
 
-  console.log("");
+  return lines;
+}
+
+function dashboardMenuLines(state: DashboardPromptState): string[] {
+  const choices = mainMenuChoices(state.snapshot.checkouts);
+  const pageSize = state.mode.type === "sync" ? syncMenuPageSize() : menuPageSize();
+  const start = Math.max(0, Math.min(state.active - Math.floor(pageSize / 2), choices.length - pageSize));
+  const end = Math.min(choices.length, start + pageSize);
+  const lines: string[] = [];
+  const sectionIndent = "  ";
+  const itemIndent = "    ";
+
+  if (start > 0) lines.push(color.dim(`  ... ${start} more above`));
+  for (let index = start; index < end; index++) {
+    const choice = choices[index];
+    if (Separator.isSeparator(choice)) {
+      lines.push(`${sectionIndent}${choice.separator}`);
+      continue;
+    }
+
+    const marker = index === state.active ? ">" : " ";
+    const name = choice.name ?? String(choice.value);
+    const line = `${itemIndent}${marker} ${name}`;
+    lines.push(index === state.active ? color.info(line) : line);
+  }
+  if (end < choices.length) lines.push(color.dim(`  ... ${choices.length - end} more below`));
+
+  const active = activeDashboardChoice(state);
+  if (active && !Separator.isSeparator(active) && active.description) {
+    lines.push("", color.dim(`${itemIndent}${active.description}`));
+  }
+
+  return lines;
 }
 
 async function repoCheckoutSearchView(): Promise<void> {
@@ -289,6 +554,26 @@ async function runCommand(label: string, fn: () => Promise<void>): Promise<void>
   await pause();
 }
 
+async function runDashboardPromptSync(
+  _label: string,
+  source: string,
+  onLine: (line?: string) => void,
+): Promise<{ failed: number }> {
+  const priorExitCode = process.exitCode;
+
+  try {
+    const paths = getPaths();
+    const logger = new Logger(paths.logFile, source, false, (line) => onLine(line));
+    return await runFullSync({
+      repos: [],
+      logger,
+      emit: onLine,
+    });
+  } finally {
+    process.exitCode = priorExitCode;
+  }
+}
+
 async function loadTuiContext(): Promise<TuiContext> {
   const paths = getPaths();
   const config = await loadConfig(paths);
@@ -302,6 +587,16 @@ async function loadTuiContext(): Promise<TuiContext> {
     checkoutRoot,
     state,
     auth,
+  };
+}
+
+async function loadDashboardSnapshot(scanCheckouts: boolean): Promise<DashboardSnapshot> {
+  const scanned = scanCheckouts ? await scanCheckoutEntries() : null;
+  const ctx = await loadTuiContext();
+  return {
+    ctx,
+    checkouts: scanned ?? Object.entries(ctx.state.checkouts).sort((a, b) => a[0].localeCompare(b[0])),
+    refreshedAt: new Date(),
   };
 }
 
@@ -411,12 +706,47 @@ function mainMenuChoices(checkouts: [string, CheckoutRecord][]): Array<Choice<Ma
   return choices;
 }
 
+function firstSelectableIndex(choices: Array<Choice<MainAction> | Separator>): number {
+  const index = choices.findIndex((choice) => !Separator.isSeparator(choice) && !choice.disabled);
+  return index === -1 ? 0 : index;
+}
+
+function activeDashboardChoice(state: DashboardPromptState): Choice<MainAction> | Separator | undefined {
+  return mainMenuChoices(state.snapshot.checkouts)[state.active];
+}
+
+function normalizeDashboardActive(state: DashboardPromptState): void {
+  const choices = mainMenuChoices(state.snapshot.checkouts);
+  const active = choices[state.active];
+  if (active && !Separator.isSeparator(active) && !active.disabled) return;
+  state.active = firstSelectableIndex(choices);
+}
+
+function moveDashboardActive(state: DashboardPromptState, offset: -1 | 1): void {
+  const choices = mainMenuChoices(state.snapshot.checkouts);
+  if (choices.length === 0) return;
+
+  let next = state.active;
+  for (let attempt = 0; attempt < choices.length; attempt++) {
+    next = (next + offset + choices.length) % choices.length;
+    const choice = choices[next];
+    if (!Separator.isSeparator(choice) && !choice.disabled) {
+      state.active = next;
+      return;
+    }
+  }
+}
+
 function menuSection(text: string): Separator {
   return new Separator(color.dim(text));
 }
 
 function menuPageSize(): number {
   return Math.max(10, Math.min(20, (process.stdout.rows ?? 24) - 8));
+}
+
+function syncMenuPageSize(): number {
+  return Math.max(5, Math.min(8, (process.stdout.rows ?? 24) - 16));
 }
 
 function repoChoices(records: RepoRecord[], term: string | undefined): Choice<RepoRecord>[] {
@@ -904,13 +1234,8 @@ function title(text: string): void {
   console.log("-".repeat(Math.max(12, Math.min(80, text.length))));
 }
 
-interface PromptBehavior {
-  refreshMs?: number;
-}
-
 async function selectPrompt<Value>(
   config: Parameters<typeof select<Value>>[0],
-  behavior: PromptBehavior = {},
 ): Promise<Value> {
   return withEscapeBack((signal) =>
     select<Value>(
@@ -921,7 +1246,6 @@ async function selectPrompt<Value>(
       },
       { signal },
     ),
-    behavior,
   );
 }
 
@@ -956,7 +1280,6 @@ async function confirmPrompt(config: Parameters<typeof confirm>[0]): Promise<boo
 
 async function withEscapeBack<Value>(
   fn: (signal: AbortSignal) => Promise<Value>,
-  behavior: PromptBehavior = {},
 ): Promise<Value> {
   const controller = new AbortController();
   const onKeypress = (_char: string, key: KeypressEvent) => {
@@ -964,11 +1287,6 @@ async function withEscapeBack<Value>(
       controller.abort(ESCAPE_ABORT_REASON);
     }
   };
-  const refreshTimer = behavior.refreshMs
-    ? setTimeout(() => {
-        if (!controller.signal.aborted) controller.abort(DASHBOARD_REFRESH_ABORT_REASON);
-      }, behavior.refreshMs)
-    : null;
 
   readline.emitKeypressEvents(process.stdin);
   process.stdin.on("keypress", onKeypress);
@@ -976,10 +1294,8 @@ async function withEscapeBack<Value>(
     return await fn(controller.signal);
   } catch (err) {
     if (isEscapeAbort(err)) throw new BackSignal();
-    if (isDashboardRefreshAbort(err)) throw new DashboardRefreshSignal();
     throw err;
   } finally {
-    if (refreshTimer) clearTimeout(refreshTimer);
     process.stdin.removeListener("keypress", onKeypress);
   }
 }
@@ -993,16 +1309,8 @@ function isBackSignal(err: unknown): boolean {
   return err instanceof BackSignal;
 }
 
-function isDashboardRefreshSignal(err: unknown): boolean {
-  return err instanceof DashboardRefreshSignal;
-}
-
 function isEscapeAbort(err: unknown): boolean {
   return isPromptAbort(err, ESCAPE_ABORT_REASON);
-}
-
-function isDashboardRefreshAbort(err: unknown): boolean {
-  return isPromptAbort(err, DASHBOARD_REFRESH_ABORT_REASON);
 }
 
 function isPromptAbort(err: unknown, reason: string): boolean {
@@ -1041,11 +1349,25 @@ function clock(date: Date): string {
   return `${date.toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
 
-function dashboardRow(
-  label: string,
-  value: string,
-): void {
-  console.log(`${color.dim(label.padEnd(12))}${value}`);
+function scheduleNextAutoSync(): number {
+  return Date.now() + AUTO_SYNC_MS;
+}
+
+function timeUntil(timestamp: number): string {
+  const ms = Math.max(0, timestamp - Date.now());
+  if (ms < 1_000) return "now";
+
+  const minutes = Math.ceil(ms / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+
+  if (hours > 0 && remainingMinutes > 0) return `in ${hours}h ${remainingMinutes}m`;
+  if (hours > 0) return `in ${hours}h`;
+  return `in ${minutes}m`;
+}
+
+function dashboardRowText(label: string, value: string): string {
+  return `${color.dim(label.padEnd(12))}${value}`;
 }
 
 function section(text: string): void {

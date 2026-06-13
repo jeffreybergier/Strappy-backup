@@ -17,6 +17,7 @@
     "start": "node dist/cli.js"
   },
   "dependencies": {
+    "@inquirer/core": "^10.3.2",
     "@inquirer/prompts": "^7.2.1",
     "better-sqlite3": "^12.10.0",
     "commander": "^13.0.0",

@@ -8,10 +8,29 @@ import { getPaths } from "../paths.js";
 import { sync } from "../sync.js";
 import { refreshTier3 } from "../tier3.js";
 
+type SyncReporter = (line?: string) => void;
+
+export interface FullSyncOptions {
+  repos?: string[];
+  logger?: Logger;
+  emit?: SyncReporter;
+}
+
+export interface FullSyncResult {
+  failed: number;
+}
+
 export async function syncCommand(repos: string[]): Promise<void> {
+  const result = await runFullSync({ repos });
+  if (result.failed > 0) process.exitCode = 1;
+}
+
+export async function runFullSync(opts: FullSyncOptions = {}): Promise<FullSyncResult> {
+  const repos = opts.repos ?? [];
+  const emit = opts.emit ?? ((line = "") => console.log(line));
   const paths = getPaths();
   const config = await loadConfig(paths);
-  const logger = new Logger(paths.logFile, "cli");
+  const logger = opts.logger ?? new Logger(paths.logFile, "cli");
 
   const resolved = await resolveToken(paths);
   if (!resolved) {
@@ -30,31 +49,29 @@ export async function syncCommand(repos: string[]): Promise<void> {
     only: repos.length ? repos : undefined,
   });
 
-  console.log("");
-  console.log(
+  emit("");
+  emit(
     `Synced ${summary.results.length} repo(s) from an inventory of ${summary.inventoryCount}:`,
   );
   for (const r of summary.results) {
     const tag = r.action === "failed" ? "✗ FAILED" : r.action === "cloned" ? "✓ cloned " : "✓ updated";
     const size = r.action === "failed" ? r.error ?? "" : humanSize(r.sizeKb);
-    console.log(`  ${tag}  ${r.fullName}  ${size}`);
+    emit(`  ${tag}  ${r.fullName}  ${size}`);
   }
   if (summary.renamed.length) {
-    console.log("");
-    for (const mv of summary.renamed) console.log(`  ↦ renamed ${mv.from} -> ${mv.to}`);
+    emit("");
+    for (const mv of summary.renamed) emit(`  ↦ renamed ${mv.from} -> ${mv.to}`);
   }
   if (summary.orphaned.length) {
-    console.log("");
-    console.log(`  ${summary.orphaned.length} orphaned (gone from GitHub, mirror kept):`);
-    for (const name of summary.orphaned) console.log(`    • ${name}`);
+    emit("");
+    emit(`  ${summary.orphaned.length} orphaned (gone from GitHub, mirror kept):`);
+    for (const name of summary.orphaned) emit(`    • ${name}`);
   }
-  console.log("");
-  console.log(`Result: ${summary.ok} ok, ${summary.failed} failed.`);
+  emit("");
+  emit(`Result: ${summary.ok} ok, ${summary.failed} failed.`);
 
-  if (summary.failed > 0) process.exitCode = 1;
-
-  console.log("");
-  console.log("Refreshing stale enrichment:");
+  emit("");
+  emit("Refreshing stale enrichment:");
   const enrichment = await enrich({
     store,
     config,
@@ -64,24 +81,22 @@ export async function syncCommand(repos: string[]): Promise<void> {
   });
 
   if (enrichment.results.length === 0) {
-    console.log(
+    emit(
       enrichment.skipped > 0
         ? `All ${enrichment.skipped} repo(s) already fresh (within ${config.enrichmentMaxAgeDays}d). Use \`strappy enrich --force\` to refetch.`
         : "No repos in inventory.",
     );
   } else {
-    console.log(
+    emit(
       `Enriched ${enrichment.ok} repo(s), ${enrichment.failed} failed, ${enrichment.skipped} fresh.`,
     );
     for (const r of enrichment.results.filter((x) => !x.ok)) {
-      console.log(`  ✗ ${r.fullName}: ${r.error}`);
+      emit(`  ✗ ${r.fullName}: ${r.error}`);
     }
   }
 
-  if (enrichment.failed > 0) process.exitCode = 1;
-
-  console.log("");
-  console.log("Refreshing Tier-3 files:");
+  emit("");
+  emit("Refreshing Tier-3 files:");
   const tier3 = await refreshTier3({
     store,
     config,
@@ -92,20 +107,20 @@ export async function syncCommand(repos: string[]): Promise<void> {
 
   if (tier3.results.length === 0) {
     const skipped = tier3.skippedArchived + tier3.skippedOrphaned;
-    console.log(
+    emit(
       skipped > 0
         ? `No active repos to refresh (${tier3.skippedArchived} archived, ${tier3.skippedOrphaned} orphaned skipped).`
         : "No repos in inventory.",
     );
   } else {
-    console.log(
+    emit(
       `Tier-3 files refreshed for ${tier3.ok} repo(s), ${tier3.failed} failed` +
         `, ${tier3.skippedArchived} archived skipped, ${tier3.skippedOrphaned} orphaned skipped.`,
     );
     for (const r of tier3.results.filter((x) => !x.ok)) {
-      console.log(`  ✗ ${r.fullName}: ${r.error}`);
+      emit(`  ✗ ${r.fullName}: ${r.error}`);
     }
   }
 
-  if (tier3.failed > 0) process.exitCode = 1;
+  return { failed: summary.failed + enrichment.failed + tier3.failed };
 }

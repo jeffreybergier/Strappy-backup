@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 type Level = "INFO" | "WARN" | "ERROR";
+export type LogSink = (line: string, level: Level) => void;
 
 /**
  * Minimal logger: appends timestamped lines to STRAPPY_HOME/logs/strappy.log
@@ -15,10 +16,16 @@ export class Logger {
     private readonly logFile: string,
     private readonly source: string = "cli",
     private readonly echo: boolean = true,
+    private readonly onLine?: LogSink,
   ) {}
 
   private write(level: Level, msg: string): void {
     const line = `${new Date().toISOString()} [${this.source}] ${level} ${msg}`;
+    try {
+      this.onLine?.(line, level);
+    } catch {
+      // Logging sinks are best-effort, same as file writes.
+    }
     if (this.echo) {
       const out = level === "ERROR" || level === "WARN" ? process.stderr : process.stdout;
       out.write(line + "\n");
