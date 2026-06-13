@@ -121,6 +121,7 @@ function reconcileInventory(
       metadata: repo.metadata,
       raw: repo.raw,
       enrichment: current?.enrichment ?? null,
+      tier3: current?.tier3 ?? null,
     };
   }
 

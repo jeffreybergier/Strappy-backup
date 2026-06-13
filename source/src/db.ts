@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import Database from "better-sqlite3";
 import lockfile from "proper-lockfile";
-import type { RepoEnrichment, RepoMetadata } from "./metadata.js";
+import type { RepoEnrichment, RepoMetadata, RepoTier3Metadata } from "./metadata.js";
 import type { Paths } from "./paths.js";
 import {
   normalize,
@@ -16,7 +16,8 @@ import {
  * Tier-1 fields get real columns so an agent (or you, with `sqlite3`) can
  * query the fleet directly — "SELECT full_name FROM repos WHERE pushed_at <
  * date('now','-1 year')". The verbatim API object rides along in raw_json,
- * and Tier-2 facets are JSON columns in `enrichment`, keyed by github_id.
+ * Tier-2 facets live in `enrichment`, and sync-time Tier-3 file bodies live in
+ * `tier3_metadata`, both keyed by github_id.
  */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -78,6 +79,15 @@ CREATE TABLE IF NOT EXISTS enrichment (
   contributors  TEXT,    -- JSON [{login,contributions}]
   open_pr_count INTEGER,
   readme        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tier3_metadata (
+  github_id   INTEGER PRIMARY KEY,
+  fetched_at  TEXT NOT NULL,
+  ref         TEXT NOT NULL,
+  readme_md   TEXT,
+  agents_md   TEXT,
+  compose_yml TEXT
 );
 
 CREATE TABLE IF NOT EXISTS checkouts (
@@ -196,6 +206,17 @@ function readState(db: Database.Database): StrappyState {
     });
   }
 
+  const tier3ById = new Map<number, RepoTier3Metadata>();
+  for (const row of db.prepare("SELECT * FROM tier3_metadata").all() as Tier3Row[]) {
+    tier3ById.set(row.github_id, {
+      fetchedAt: row.fetched_at,
+      ref: row.ref,
+      readmeMd: row.readme_md,
+      agentsMd: row.agents_md,
+      composeYml: row.compose_yml,
+    });
+  }
+
   const repos: Record<string, RepoRecord> = {};
   for (const row of db.prepare("SELECT * FROM repos").all() as RepoRow[]) {
     repos[row.full_name] = {
@@ -212,6 +233,7 @@ function readState(db: Database.Database): StrappyState {
       metadata: row.has_metadata ? metadataFromRow(row) : null,
       raw: row.raw_json ? (JSON.parse(row.raw_json) as unknown) : null,
       enrichment: enrichmentById.get(row.github_id) ?? null,
+      tier3: tier3ById.get(row.github_id) ?? null,
     };
   }
 
@@ -280,6 +302,12 @@ function writeState(db: Database.Database, state: StrappyState): void {
         @github_id, @fetched_at, @languages, @latest_release, @has_releases,
         @latest_commit, @branches, @tags, @contributors, @open_pr_count, @readme
       )`);
+    const insertTier3 = db.prepare(`
+      INSERT INTO tier3_metadata (
+        github_id, fetched_at, ref, readme_md, agents_md, compose_yml
+      ) VALUES (
+        @github_id, @fetched_at, @ref, @readme_md, @agents_md, @compose_yml
+      )`);
     const insertCheckout = db.prepare(`
       INSERT INTO checkouts (
         name, repo, path, created_at, branch, mode, remote_url, last_scan,
@@ -291,7 +319,7 @@ function writeState(db: Database.Database, state: StrappyState): void {
     const delMeta = db.prepare("DELETE FROM meta WHERE key = ?");
 
     tx = db.transaction((s: StrappyState) => {
-      db.exec("DELETE FROM repos; DELETE FROM enrichment; DELETE FROM checkouts;");
+      db.exec("DELETE FROM repos; DELETE FROM enrichment; DELETE FROM tier3_metadata; DELETE FROM checkouts;");
       for (const rec of Object.values(s.repos)) {
         insertRepo.run(repoToRow(rec));
         if (rec.enrichment) {
@@ -308,6 +336,17 @@ function writeState(db: Database.Database, state: StrappyState): void {
             contributors: json(e.contributors),
             open_pr_count: e.openPrCount,
             readme: e.readme,
+          });
+        }
+        if (rec.tier3) {
+          const t = rec.tier3;
+          insertTier3.run({
+            github_id: rec.githubId,
+            fetched_at: t.fetchedAt,
+            ref: t.ref,
+            readme_md: t.readmeMd,
+            agents_md: t.agentsMd,
+            compose_yml: t.composeYml,
           });
         }
       }
@@ -471,6 +510,15 @@ interface EnrichmentRow {
   contributors: string | null;
   open_pr_count: number | null;
   readme: string | null;
+}
+
+interface Tier3Row {
+  github_id: number;
+  fetched_at: string;
+  ref: string;
+  readme_md: string | null;
+  agents_md: string | null;
+  compose_yml: string | null;
 }
 
 interface CheckoutRow {

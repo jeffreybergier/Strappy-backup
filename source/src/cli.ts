@@ -33,7 +33,7 @@ program
 
 program
   .command("sync")
-  .description("Refresh inventory, mirrors, and stale enrichment for all repos (or just the named ones)")
+  .description("Refresh inventory, mirrors, stale enrichment, and Tier-3 files")
   .argument("[repos...]", 'repos to sync, e.g. "owner/name" or "name"')
   .action(async (repos: string[]) => {
     await syncCommand(repos);
@@ -61,8 +61,8 @@ program
   .command("info")
   .description("Show everything strappy knows about one repo")
   .argument("<repo>", '"owner/name" or "name"')
-  .option("--json", "machine-readable output (README elided unless --full)")
-  .option("--full", "with --json, include the raw API object and full README")
+  .option("--json", "machine-readable output (large file bodies elided unless --full)")
+  .option("--full", "with --json, include the raw API object and full file bodies")
   .action(async (repo: string, opts: { json?: boolean; full?: boolean }) => {
     await infoCommand(repo, opts);
   });

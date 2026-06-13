@@ -6,6 +6,7 @@ import { openStore } from "../db.js";
 import { Logger } from "../logger.js";
 import { getPaths } from "../paths.js";
 import { sync } from "../sync.js";
+import { refreshTier3 } from "../tier3.js";
 
 export async function syncCommand(repos: string[]): Promise<void> {
   const paths = getPaths();
@@ -78,4 +79,33 @@ export async function syncCommand(repos: string[]): Promise<void> {
   }
 
   if (enrichment.failed > 0) process.exitCode = 1;
+
+  console.log("");
+  console.log("Refreshing Tier-3 files:");
+  const tier3 = await refreshTier3({
+    store,
+    config,
+    token: resolved.token,
+    logger,
+    only: repos.length ? repos : undefined,
+  });
+
+  if (tier3.results.length === 0) {
+    const skipped = tier3.skippedArchived + tier3.skippedOrphaned;
+    console.log(
+      skipped > 0
+        ? `No active repos to refresh (${tier3.skippedArchived} archived, ${tier3.skippedOrphaned} orphaned skipped).`
+        : "No repos in inventory.",
+    );
+  } else {
+    console.log(
+      `Tier-3 files refreshed for ${tier3.ok} repo(s), ${tier3.failed} failed` +
+        `, ${tier3.skippedArchived} archived skipped, ${tier3.skippedOrphaned} orphaned skipped.`,
+    );
+    for (const r of tier3.results.filter((x) => !x.ok)) {
+      console.log(`  ✗ ${r.fullName}: ${r.error}`);
+    }
+  }
+
+  if (tier3.failed > 0) process.exitCode = 1;
 }

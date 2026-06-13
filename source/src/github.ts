@@ -3,10 +3,13 @@ import type { StrappyConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import {
   README_MAX_CHARS,
+  TIER3_FILE_MAX_CHARS,
+  TIER3_REF,
   toRepoMetadata,
   type ApiRepo,
   type RepoEnrichment,
   type RepoMetadata,
+  type RepoTier3Metadata,
 } from "./metadata.js";
 import { splitFullName } from "./paths.js";
 
@@ -236,6 +239,72 @@ export async function fetchEnrichment(
     openPrCount,
     readme,
   };
+}
+
+/**
+ * Fetch Tier-3 agent context files from the literal `main` ref. Missing files
+ * are normal and stored as null. This is called from sync only for active repos.
+ */
+export async function fetchTier3Metadata(
+  octokit: Octokit,
+  fullName: string,
+  logger: Logger,
+): Promise<RepoTier3Metadata> {
+  const [owner, repo] = splitFullName(fullName);
+
+  const file = async (path: string): Promise<string | null> => {
+    try {
+      return await fetchTextFile(octokit, owner, repo, path, TIER3_REF);
+    } catch (err) {
+      if (status(err) === 404 || status(err) === 409) return null;
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`${fullName}: tier3 file "${path}" failed: ${message}`);
+      return null;
+    }
+  };
+
+  const [readmeMd, agentsMd, composeYml] = await Promise.all([
+    file("README.md"),
+    file("AGENTS.md"),
+    file("compose.yml"),
+  ]);
+
+  return {
+    fetchedAt: new Date().toISOString(),
+    ref: TIER3_REF,
+    readmeMd,
+    agentsMd,
+    composeYml,
+  };
+}
+
+type ContentFile = {
+  type?: string;
+  content?: string;
+  encoding?: string;
+};
+
+async function fetchTextFile(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<string | null> {
+  const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
+  if (Array.isArray(data)) return null;
+
+  const file = data as ContentFile;
+  if (file.type !== "file" || typeof file.content !== "string") return null;
+
+  const text =
+    file.encoding === "base64"
+      ? Buffer.from(file.content.replace(/\s/g, ""), "base64").toString("utf8")
+      : file.content;
+
+  return text.length > TIER3_FILE_MAX_CHARS
+    ? text.slice(0, TIER3_FILE_MAX_CHARS) + "\n\n[…truncated by strappy]"
+    : text;
 }
 
 function status(err: unknown): number | undefined {

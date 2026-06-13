@@ -26,6 +26,10 @@ first-pass TUI, and direct GitHub-origin checkout management.
     commit, branches, tags, contributors, true open-PR count, and the README
     itself. Refreshed only when older than `enrichmentMaxAgeDays` (config,
     default 7).
+  - *Tier 3* (`strappy sync`, non-archived repos only): raw `README.md`,
+    `AGENTS.md`, and `compose.yml` contents from the `main` branch, capped for
+    pathological files and stored in SQLite for agent context. `compose.yml` is
+    stored raw for now rather than pre-parsed into services.
 - Records everything in `strappy.db` (SQLite via better-sqlite3, queryable with
   plain SQL), guarded by a lock so a manual sync and the (future) daemon can't
   collide. A pre-existing `state.json` is imported automatically on first run.
@@ -64,12 +68,12 @@ Run with `npm run strappy -- <args>` (dev), or `npm run build && strappy <args>`
 ```bash
 npm run strappy --                     # interactive TUI when run in a TTY
 npm run strappy -- auth --check        # which token would be used?
-npm run strappy -- sync                # mirror everything (+ stale enrichment)
+npm run strappy -- sync                # mirror everything (+ stale enrichment + Tier-3 files)
 npm run strappy -- sync owner/repo     # mirror just one
 npm run strappy -- enrich              # fetch Tier-2 metadata without mirroring
 npm run strappy -- enrich owner/repo --force   # refetch one repo now
 npm run strappy -- info owner/repo     # everything strappy knows about a repo
-npm run strappy -- info repo --json    # agent-friendly JSON (--full adds raw + README)
+npm run strappy -- info repo --json    # agent-friendly JSON (--full adds raw/file bodies)
 npm run strappy -- list                # list mirrors
 npm run strappy -- list --stale        # only stale mirrors
 npm run strappy -- list --orphaned     # repos gone from GitHub

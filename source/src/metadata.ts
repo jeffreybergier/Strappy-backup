@@ -1,5 +1,5 @@
 /**
- * Repo metadata captured from the GitHub API, in two tiers:
+ * Repo metadata captured from the GitHub API, in three tiers:
  *
  * - Tier 1 (`RepoMetadata`): comes for free with the repo-list response on
  *   every sync — no extra API calls. The full raw API object is also kept
@@ -8,6 +8,8 @@
  * - Tier 2 (`RepoEnrichment`): costs extra per-repo calls (languages,
  *   releases, README, …), fetched by `strappy enrich` and refreshed only when
  *   older than `config.enrichmentMaxAgeDays`.
+ * - Tier 3 (`RepoTier3Metadata`): sync-time file bodies from `main` that are
+ *   useful context for agents. This tier is fetched only for non-archived repos.
  *
  * This module is shared by github.ts (producer) and state.ts (storage shape),
  * and deliberately imports neither.
@@ -83,6 +85,17 @@ export interface RepoEnrichment {
 
 /** READMEs are stored for agent consumption; cap pathological ones. */
 export const README_MAX_CHARS = 100_000;
+
+export const TIER3_REF = "main";
+export const TIER3_FILE_MAX_CHARS = 200_000;
+
+export interface RepoTier3Metadata {
+  fetchedAt: string;
+  ref: string;
+  readmeMd: string | null;
+  agentsMd: string | null;
+  composeYml: string | null;
+}
 
 /** The subset of the GitHub API repository object we map into RepoMetadata. */
 export interface ApiRepo {

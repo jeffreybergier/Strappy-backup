@@ -1,4 +1,4 @@
-import type { RepoEnrichment, RepoMetadata } from "./metadata.js";
+import type { RepoEnrichment, RepoMetadata, RepoTier3Metadata } from "./metadata.js";
 
 export interface RepoRecord {
   githubId: number;
@@ -19,6 +19,8 @@ export interface RepoRecord {
   raw: unknown | null;
   /** Tier-2 facets from `strappy enrich`; refreshed when stale. */
   enrichment: RepoEnrichment | null;
+  /** Tier-3 sync-time agent context files from the repo's `main` branch. */
+  tier3: RepoTier3Metadata | null;
 }
 
 /** Ephemeral working copy registry and last-known safety scan. */
@@ -83,6 +85,7 @@ export function normalize(s: Partial<StrappyState>): StrappyState {
       metadata: rec.metadata ?? null,
       raw: rec.raw ?? null,
       enrichment: rec.enrichment ?? null,
+      tier3: rec.tier3 ?? null,
     };
   }
   return {
