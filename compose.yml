@@ -3,34 +3,31 @@ services:
     image: ghcr.io/jeffreybergier/altivec-intelligence:latest
     stdin_open: true
     tty: true
+    env_file:
+      - ~/Developer/zStrappy-Fleet/.env
     environment:
       - IS_SANDBOX=1
     volumes:
       - ~/.altivec:/root
-      - .:/repo
+      - ~/Developer/zStrappy-Fleet/AGENTS.md:/repo/AGENTS.md
+      - ~/Developer/zStrappy-Fleet/skills:/repo/skills
+      - ~/Developer/zStrappy-Fleet/source:/repo/strappy-fleet
+      - ~/Developer/zBackups:/repo/backups
+      - ~/Developer/Vibing:/repo/checkouts
     working_dir: /repo
     entrypoint: /bin/bash
     command: -lc "altivec-chooser"
-
-  shell:
-    image: ghcr.io/jeffreybergier/altivec-intelligence:latest
-    environment:
-      - STRAPPY_HOME=${STRAPPY_HOME:-/repo/backups}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-    volumes:
-      - ~/.strappy:/root
-      - .:/repo
-    working_dir: /repo/source
 
   strappy:
     image: ghcr.io/jeffreybergier/altivec-intelligence:latest
     stdin_open: true
     tty: true
-    environment:
-      - STRAPPY_HOME=${STRAPPY_HOME:-/repo/backups}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    env_file:
+      - ~/Developer/zStrappy-Fleet/.env
     volumes:
-      - ~/.strappy:/root
-      - .:/repo
-    working_dir: /repo/source
+      - ~/.altivec:/root
+      - ~/Developer/zStrappy-Fleet/source:/repo/strappy-fleet
+      - ~/Developer/zBackups:/repo/backups
+      - ~/Developer/Vibing:/repo/checkouts
+    working_dir: /repo/strappy-fleet
     entrypoint: /bin/bash -lc 'npm install --no-fund --no-audit --loglevel=error >/dev/null && exec npm run --silent strappy -- "$@"' bash
