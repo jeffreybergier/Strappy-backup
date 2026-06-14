@@ -137,16 +137,20 @@ Saved environment files live under a repo-relative tree:
 $STRAPPY_HOME/environments/<owner>/<repo>/<repo-relative-path>
 ```
 
-Only explicit repo-relative file paths are saved. Restore refuses unsafe paths,
-symlinks, and existing different target files unless `--overwrite` is passed.
-Files are restored with private permissions (`0600`, or `0700` for executable
-files). The `<owner>/<repo>` directory is the source of truth and can be edited
-directly; Strappy rebuilds its saved secret list by scanning this tree when
-listing environments, including when the TUI opens `Environments`.
+By default, save/update discovers repo-relative files that Git is not tracking:
+untracked files, ignored files, and tracked files marked assume-unchanged or
+skip-worktree. Dependency and generated-cache noise such as `node_modules` and
+`.wrangler/tmp` is skipped. Explicit repo-relative file or directory paths can
+still be passed to save/update. Restore refuses unsafe paths, symlinks, and
+existing different target files unless `--overwrite` is passed. Files are
+restored with private permissions (`0600`, or `0700` for executable files). The
+`<owner>/<repo>` directory is the source of truth and can be edited directly;
+Strappy rebuilds its saved secret list by scanning this tree when listing
+environments, including when the TUI opens `Environments`.
 
 Use `strappy env list` to show each saved repo and its secret count. Use
-`strappy env update [repo] --from <checkout>` to refresh already-saved secret
-paths from a checkout; update refuses to run unless the checkout is clean and
-has no unpushed commits. Add new paths explicitly with `strappy env save`.
+`strappy env update [repo] --from <checkout>` to refresh the discovered
+environment file set from a checkout; update refuses to run when tracked files
+have uncommitted changes. Add specific paths with `strappy env save`.
 The interactive TUI has the same environment workflows under `Environments`,
 and checkout creation prompts to restore saved secrets when the repo has any.

@@ -82,12 +82,12 @@ const envCommand = program
 
 envCommand
   .command("save")
-  .description("Save selected repo-relative environment files into STRAPPY_HOME")
+  .description("Save environment files into STRAPPY_HOME")
   .argument("<repo>", '"owner/name" or "name"')
-  .argument("[paths...]", "repo-relative files to save")
+  .argument("[paths...]", "repo-relative files or directories to save (default: discover untracked/ignored)")
   .option("--from <path>", "checkout path to read from (default: current directory)")
   .option("--profile <profile>", "environment profile name", "default")
-  .option("--path <path>", "repo-relative file to save (repeatable)", collectOption, [] as string[])
+  .option("--path <path>", "repo-relative file or directory to save (repeatable)", collectOption, [] as string[])
   .action(async (repo: string, paths: string[], opts: { from?: string; profile?: string; path?: string[] }) => {
     await envSaveCommand(repo, paths, opts);
   });
@@ -106,11 +106,11 @@ envCommand
 
 envCommand
   .command("update")
-  .description("Refresh saved environment files from a clean, fully pushed checkout")
+  .description("Refresh environment files from a clean checkout")
   .argument("[repo]", '"owner/name" or "name" (default: infer from checkout)')
   .option("--from <path>", "checkout path to read from (default: current directory)")
   .option("--profile <profile>", "environment profile name", "default")
-  .option("--path <path>", "already-saved repo-relative file to update (repeatable)", collectOption, [] as string[])
+  .option("--path <path>", "repo-relative file or directory to update (repeatable)", collectOption, [] as string[])
   .action(async (repo: string | undefined, opts: { from?: string; profile?: string; path?: string[] }) => {
     await envUpdateCommand(repo, opts);
   });

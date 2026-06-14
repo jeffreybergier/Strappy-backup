@@ -3,13 +3,17 @@ import { execa } from "execa";
 import {
   listEnvironmentProfiles,
   listEnvironmentRepositories,
-  readEnvironmentManifest,
   restoreEnvironment,
   saveEnvironment,
 } from "../environments.js";
+import {
+  assertEnvironmentCheckoutReady,
+  discoverEnvironmentFilePaths,
+  environmentCheckoutRoot,
+} from "../environment-discovery.js";
 import { openStore } from "../db.js";
 import { getPaths, splitFullName } from "../paths.js";
-import { checkoutStatus, resolveRepo, scanCheckout } from "../checkouts.js";
+import { resolveRepo } from "../checkouts.js";
 import type { CheckoutRecord, RepoRecord } from "../state.js";
 
 export interface EnvSaveOptions {
@@ -45,9 +49,17 @@ export async function envSaveCommand(
   const store = openStore(paths);
   const state = await store.read();
   const repo = resolveEnvironmentRepo(Object.values(state.repos), repoArg);
-  const checkoutPath = path.resolve(opts.from?.trim() || process.cwd());
-  const filePaths = [...pathArgs, ...(opts.path ?? [])];
+  const inputCheckoutPath = path.resolve(opts.from?.trim() || process.cwd());
+  let checkoutPath = inputCheckoutPath;
+  let filePaths = [...pathArgs, ...(opts.path ?? [])];
   const profile = opts.profile?.trim() || "default";
+
+  if (filePaths.length === 0) {
+    checkoutPath = await assertEnvironmentCheckoutReady(inputCheckoutPath);
+    filePaths = await discoverEnvironmentFilePaths(checkoutPath);
+  } else {
+    checkoutPath = await nullableEnvironmentCheckoutRoot(inputCheckoutPath) ?? inputCheckoutPath;
+  }
 
   const result = await saveEnvironment({
     paths,
@@ -149,24 +161,16 @@ export async function envUpdateCommand(
   const paths = getPaths();
   const store = openStore(paths);
   const state = await store.read();
-  const checkoutPath = path.resolve(opts.from?.trim() || process.cwd());
+  const checkoutPath = await assertEnvironmentCheckoutReady(path.resolve(opts.from?.trim() || process.cwd()));
   const repo = repoArg
     ? resolveEnvironmentRepo(Object.values(state.repos), repoArg)
     : await resolveRepoFromCheckout(checkoutPath, state.checkouts, Object.values(state.repos));
   const profile = opts.profile?.trim() || "default";
-  const manifest = await readEnvironmentManifest(paths, repo, profile);
-  const requested = opts.path?.length ? new Set(opts.path.map(normalizeRepoPath)) : null;
-  const filePaths = requested
-    ? manifest.files.filter((entry) => requested.has(entry.path)).map((entry) => entry.path)
-    : manifest.files.map((entry) => entry.path);
-  const missing = requested
-    ? [...requested].filter((rel) => !manifest.files.some((entry) => entry.path === rel))
-    : [];
+  const filePaths = opts.path?.length
+    ? opts.path.map(normalizeRepoPath)
+    : await discoverEnvironmentFilePaths(checkoutPath);
 
-  if (missing.length) throw new Error(`Not already saved for ${repo}: ${missing.join(", ")}`);
   if (filePaths.length === 0) throw new Error(`No saved files to update for ${repo} profile "${profile}".`);
-
-  await assertCheckoutCleanAndPushed(repo, checkoutPath);
 
   const result = await saveEnvironment({
     paths,
@@ -209,31 +213,6 @@ async function resolveRepoFromCheckout(
   throw new Error("Could not determine repo for checkout. Pass the repo name explicitly.");
 }
 
-async function assertCheckoutCleanAndPushed(repo: string, checkoutPath: string): Promise<void> {
-  const scanned = await scanCheckout({
-    repo,
-    path: checkoutPath,
-    createdAt: new Date().toISOString(),
-    branch: "",
-    mode: "github",
-    remoteUrl: null,
-    lastScan: null,
-    exists: null,
-    dirty: null,
-    ahead: null,
-    behind: null,
-    currentBranch: null,
-    headSha: null,
-    upstream: null,
-    scanError: null,
-  });
-
-  if (scanned.exists === false) throw new Error(`Checkout path does not exist: ${checkoutPath}`);
-  if (scanned.scanError) throw new Error(`Checkout scan failed: ${scanned.scanError}`);
-  if (scanned.dirty) throw new Error(`Checkout is not clean: ${checkoutStatus(scanned)}`);
-  if ((scanned.ahead ?? 0) > 0) throw new Error(`Checkout has unpushed commits: ${checkoutStatus(scanned)}`);
-}
-
 async function nullableGitOut(repoPath: string, args: string[]): Promise<string | null> {
   try {
     const { stdout } = await execa("git", ["-C", repoPath, ...args], {
@@ -242,6 +221,14 @@ async function nullableGitOut(repoPath: string, args: string[]): Promise<string 
     });
     const trimmed = stdout.trim();
     return trimmed || null;
+  } catch {
+    return null;
+  }
+}
+
+async function nullableEnvironmentCheckoutRoot(checkoutPath: string): Promise<string | null> {
+  try {
+    return await environmentCheckoutRoot(checkoutPath);
   } catch {
     return null;
   }

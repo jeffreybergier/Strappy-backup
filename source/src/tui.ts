@@ -40,6 +40,11 @@ import {
   type EnvironmentProfileSummary,
   type EnvironmentRepoSummary,
 } from "./environments.js";
+import {
+  assertEnvironmentCheckoutReady,
+  discoverEnvironmentFilePaths,
+  environmentCheckoutRoot,
+} from "./environment-discovery.js";
 import { humanSize, timeAgo } from "./format.js";
 import { makeOctokit, whoami } from "./github.js";
 import { Logger } from "./logger.js";
@@ -64,6 +69,23 @@ type AuditAction =
 type CheckoutWorkAction = "diff" | "commit" | "reset";
 
 type EnvironmentAction = "list" | "update" | "save" | "restore";
+
+type EnvironmentDriftAction = "upload" | "download" | "choose" | "blocked";
+
+interface EnvironmentDriftRow {
+  action: EnvironmentDriftAction;
+  checkoutName: string;
+  repo: string;
+  path: string;
+  detail?: string;
+}
+
+interface EnvironmentDriftReport {
+  rows: EnvironmentDriftRow[];
+  checked: number;
+  warnings: string[];
+  savedWithoutCheckout: string[];
+}
 
 interface Choice<Value> {
   value: Value;
@@ -1004,11 +1026,12 @@ function printAuditRepoList(records: RepoRecord[]): void {
 async function environmentsMenu(): Promise<void> {
   while (true) {
     const paths = getPaths();
-    const summaries = await listEnvironmentRepositories(paths);
+    const checkouts = await scanCheckoutEntries();
+    const drift = await environmentDriftReport(paths, checkouts);
 
     clear();
     title("Environments");
-    printEnvironmentSummaries(summaries);
+    printEnvironmentDrift(drift);
     console.log("");
 
     let action: EnvironmentAction;
@@ -1017,9 +1040,9 @@ async function environmentsMenu(): Promise<void> {
         message: "Menu",
         choices: [
           { value: "list", name: "View Saved Secret Counts" },
-          { value: "update", name: "Update Saved Secrets From Checkout" },
-          { value: "save", name: "Save New Secret Path From Checkout" },
-          { value: "restore", name: "Restore Saved Secrets Into Checkout" },
+          { value: "update", name: "Upload Checkout Secrets To Strappy" },
+          { value: "save", name: "Upload Specific Path From Checkout" },
+          { value: "restore", name: "Download Strappy Secrets To Checkout" },
         ],
       });
     } catch (err) {
@@ -1056,6 +1079,197 @@ function printEnvironmentSummaries(summaries: EnvironmentRepoSummary[]): void {
   console.log(color.dim(`${summaries.length} repo(s).`));
 }
 
+async function environmentDriftReport(
+  paths: Paths,
+  checkouts: [string, CheckoutRecord][],
+): Promise<EnvironmentDriftReport> {
+  const savedSummaries = await listEnvironmentRepositories(paths);
+  const checkoutRepos = new Set(checkouts.map(([, checkout]) => checkout.repo));
+  const savedWithoutCheckout = savedSummaries
+    .filter((summary) => !checkoutRepos.has(summary.repo))
+    .map((summary) => summary.repo);
+  const rows: EnvironmentDriftRow[] = [];
+  const warnings: string[] = [];
+  let checked = 0;
+
+  for (const [name, checkout] of checkouts) {
+    if (checkout.exists === false) {
+      warnings.push(`${name}: checkout path is missing`);
+      continue;
+    }
+    if (checkout.scanError) {
+      warnings.push(`${name}: ${checkout.scanError}`);
+      continue;
+    }
+
+    try {
+      rows.push(...(await checkoutEnvironmentDriftRows(paths, name, checkout)));
+      checked += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      warnings.push(`${name}: ${message}`);
+    }
+  }
+
+  rows.sort(
+    (a, b) =>
+      environmentDriftActionRank(a.action) - environmentDriftActionRank(b.action) ||
+      a.checkoutName.localeCompare(b.checkoutName) ||
+      a.path.localeCompare(b.path),
+  );
+  return { rows, checked, warnings, savedWithoutCheckout };
+}
+
+async function checkoutEnvironmentDriftRows(
+  paths: Paths,
+  checkoutName: string,
+  checkout: CheckoutRecord,
+): Promise<EnvironmentDriftRow[]> {
+  const root = await environmentCheckoutRoot(checkout.path);
+  const discoveredPaths = await discoverEnvironmentFilePaths(root);
+  const manifest = await readEnvironmentManifest(paths, checkout.repo, "default", { allowMissing: true });
+  const savedByPath = new Map((manifest?.files ?? []).map((entry) => [entry.path, entry]));
+  const discovered = new Set(discoveredPaths);
+  const rows: EnvironmentDriftRow[] = [];
+
+  for (const rel of discoveredPaths) {
+    if (!savedByPath.has(rel)) {
+      rows.push({
+        action: "upload",
+        checkoutName,
+        repo: checkout.repo,
+        path: rel,
+        detail: "checkout only",
+      });
+    }
+  }
+
+  for (const entry of savedByPath.values()) {
+    const checkoutFile = path.join(root, ...entry.path.split("/"));
+    const current = await checkoutEnvironmentFileState(checkoutFile);
+    if (current.kind === "missing") {
+      rows.push({
+        action: "download",
+        checkoutName,
+        repo: checkout.repo,
+        path: entry.path,
+        detail: "strappy only",
+      });
+      continue;
+    }
+    if (current.kind === "blocked") {
+      rows.push({
+        action: "blocked",
+        checkoutName,
+        repo: checkout.repo,
+        path: entry.path,
+        detail: current.reason,
+      });
+      continue;
+    }
+    if (current.sha256 !== entry.sha256) {
+      rows.push({
+        action: "choose",
+        checkoutName,
+        repo: checkout.repo,
+        path: entry.path,
+        detail: discovered.has(entry.path) ? "both present" : "contents differ",
+      });
+    }
+  }
+
+  return rows;
+}
+
+async function checkoutEnvironmentFileState(
+  file: string,
+): Promise<{ kind: "file"; sha256: string } | { kind: "missing" } | { kind: "blocked"; reason: string }> {
+  let stat;
+  try {
+    stat = await fs.lstat(file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+    throw err;
+  }
+
+  if (stat.isSymbolicLink()) return { kind: "blocked", reason: "checkout path is a symlink" };
+  if (!stat.isFile()) return { kind: "blocked", reason: "checkout path is not a file" };
+  return { kind: "file", sha256: await hashFileSha256(file) };
+}
+
+async function hashFileSha256(file: string): Promise<string> {
+  return createHash("sha256").update(await fs.readFile(file)).digest("hex");
+}
+
+function printEnvironmentDrift(report: EnvironmentDriftReport): void {
+  console.log(color.bold("Drift"));
+  if (report.checked === 0) {
+    console.log("No registered checkouts to compare.");
+  } else if (report.rows.length === 0) {
+    console.log(`All environment files match across ${report.checked} checkout(s).`);
+  } else {
+    const layout = environmentDriftLayout(report.rows);
+    for (const row of report.rows.slice(0, environmentDriftPageSize())) {
+      console.log(environmentDriftLine(row, layout));
+    }
+    if (report.rows.length > environmentDriftPageSize()) {
+      console.log(color.dim(`... ${report.rows.length - environmentDriftPageSize()} more mismatch(es)`));
+    }
+  }
+
+  if (report.warnings.length) {
+    console.log("");
+    console.log(color.warn(`Skipped ${report.warnings.length} checkout(s).`));
+    for (const warning of report.warnings.slice(0, 3)) console.log(color.dim(warning));
+    if (report.warnings.length > 3) console.log(color.dim(`... ${report.warnings.length - 3} more`));
+  }
+
+  if (report.savedWithoutCheckout.length) {
+    console.log("");
+    console.log(color.dim(`${report.savedWithoutCheckout.length} saved repo(s) have no registered checkout.`));
+    console.log(color.dim(report.savedWithoutCheckout.slice(0, 3).join(", ")));
+  }
+}
+
+interface EnvironmentDriftLayout {
+  actionWidth: number;
+  checkoutWidth: number;
+  pathWidth: number;
+}
+
+function environmentDriftLayout(rows: EnvironmentDriftRow[]): EnvironmentDriftLayout {
+  const actionWidth = Math.max("Action".length, ...rows.map((row) => environmentDriftActionLabel(row.action).length));
+  const checkoutWidth = Math.min(28, Math.max("Checkout".length, ...rows.map((row) => row.checkoutName.length)));
+  const gapsWidth = 4;
+  const pathWidth = Math.max(12, screenWidth() - actionWidth - checkoutWidth - gapsWidth);
+  return { actionWidth, checkoutWidth, pathWidth };
+}
+
+function environmentDriftLine(row: EnvironmentDriftRow, layout: EnvironmentDriftLayout): string {
+  const action = environmentDriftActionLabel(row.action).padEnd(layout.actionWidth);
+  const checkout = fitText(row.checkoutName, layout.checkoutWidth).padEnd(layout.checkoutWidth);
+  const detail = row.detail ? ` ${color.dim(`(${row.detail})`)}` : "";
+  return `${action}  ${checkout}  ${fitText(row.path, layout.pathWidth)}${detail}`;
+}
+
+function environmentDriftActionLabel(action: EnvironmentDriftAction): string {
+  if (action === "upload") return "upload";
+  if (action === "download") return "download";
+  if (action === "choose") return "choose";
+  return "blocked";
+}
+
+function environmentDriftActionRank(action: EnvironmentDriftAction): number {
+  if (action === "choose") return 0;
+  if (action === "upload") return 1;
+  if (action === "download") return 2;
+  return 3;
+}
+
+function environmentDriftPageSize(): number {
+  return Math.max(6, Math.min(14, (process.stdout.rows ?? 24) - 13));
+}
+
 interface EnvironmentCheckoutSource {
   repo: string;
   path: string;
@@ -1066,15 +1280,24 @@ interface EnvironmentCheckoutSource {
 async function updateEnvironmentFromCheckout(): Promise<void> {
   const source = await chooseEnvironmentCheckoutSource("Update from checkout");
   if (!source) return;
-  const clean = await requireCleanPushedCheckout(source);
-  if (!clean) return;
+  const checkoutPath = await requireCleanCheckout(source);
+  if (!checkoutPath) return;
 
   const paths = getPaths();
-  const profile = await chooseEnvironmentProfile(source.repo);
+  const filePaths = await discoverEnvironmentFilePaths(checkoutPath);
+  if (filePaths.length === 0) {
+    clear();
+    title("No Environment Files");
+    console.log(`No untracked, ignored, assume-unchanged, or skip-worktree file(s) found for ${source.repo}.`);
+    console.log("");
+    await pause();
+    return;
+  }
+
+  const profile = await chooseEnvironmentProfile(source.repo, true);
   if (!profile) return;
-  const manifest = await readEnvironmentManifest(paths, source.repo, profile);
   const confirmed = await confirmPrompt({
-    message: `Update ${manifest.files.length} saved secret(s) from ${source.label}?`,
+    message: `Update ${filePaths.length} environment file(s) from ${source.label}?`,
     default: true,
   });
   if (!confirmed) return;
@@ -1084,8 +1307,8 @@ async function updateEnvironmentFromCheckout(): Promise<void> {
       paths,
       repo: source.repo,
       profile,
-      checkoutPath: source.path,
-      filePaths: manifest.files.map((entry) => entry.path),
+      checkoutPath,
+      filePaths,
     });
     console.log(`Updated ${result.saved.length} secret(s) for ${source.repo}.`);
   });
@@ -1094,8 +1317,8 @@ async function updateEnvironmentFromCheckout(): Promise<void> {
 async function saveEnvironmentPathFromCheckout(): Promise<void> {
   const source = await chooseEnvironmentCheckoutSource("Save from checkout");
   if (!source) return;
-  const clean = await requireCleanPushedCheckout(source);
-  if (!clean) return;
+  const checkoutPath = await requireCleanCheckout(source);
+  if (!checkoutPath) return;
 
   let relPath: string;
   try {
@@ -1119,7 +1342,7 @@ async function saveEnvironmentPathFromCheckout(): Promise<void> {
       paths: getPaths(),
       repo: source.repo,
       profile: "default",
-      checkoutPath: source.path,
+      checkoutPath,
       filePaths: [trimmed],
     });
     console.log(`Saved ${result.saved.length} secret(s) for ${source.repo}.`);
@@ -1216,9 +1439,10 @@ async function chooseEnvironmentCheckoutSource(message: string): Promise<Environ
   };
 }
 
-async function chooseEnvironmentProfile(repo: string): Promise<string | null> {
+async function chooseEnvironmentProfile(repo: string, allowDefaultWhenMissing = false): Promise<string | null> {
   const profiles = await listEnvironmentProfiles(getPaths(), repo);
   if (profiles.length === 0) {
+    if (allowDefaultWhenMissing) return "default";
     clear();
     title("No Saved Secrets");
     console.log(`No saved secrets for ${repo}.`);
@@ -1247,27 +1471,32 @@ function environmentProfileChoice(profile: EnvironmentProfileSummary): Choice<st
   };
 }
 
-async function requireCleanPushedCheckout(source: EnvironmentCheckoutSource): Promise<CheckoutRecord | null> {
+async function requireCleanCheckout(source: EnvironmentCheckoutSource): Promise<string | null> {
   const scanned = source.checkoutName ? await refreshCheckout(source.checkoutName) : await scanStandaloneCheckout(source);
   if (!scanned) return null;
 
-  const problem =
+  let checkoutPath: string | null = null;
+  let problem =
     scanned.exists === false
       ? `Checkout path does not exist: ${source.path}`
       : scanned.scanError
         ? `Checkout scan failed: ${scanned.scanError}`
-        : scanned.dirty
-          ? `Checkout is not clean: ${checkoutStatus(scanned)}`
-          : (scanned.ahead ?? 0) > 0
-            ? `Checkout has unpushed commits: ${checkoutStatus(scanned)}`
-            : null;
+        : null;
 
-  if (!problem) return scanned;
+  if (!problem) {
+    try {
+      checkoutPath = await assertEnvironmentCheckoutReady(source.path);
+    } catch (err) {
+      problem = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  if (!problem) return checkoutPath;
 
   clear();
   title("Checkout Not Ready");
   console.log(problem);
-  console.log(color.dim("Commit and push the checkout from your local shell before updating saved secrets."));
+  console.log(color.dim("Commit or discard tracked changes before updating saved secrets."));
   console.log("");
   await pause();
   return null;

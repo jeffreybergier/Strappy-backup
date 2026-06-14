@@ -83,7 +83,7 @@ export async function saveEnvironment(opts: SaveEnvironmentOptions): Promise<Sav
   const repo = validateRepo(opts.repo);
   const profile = validateProfile(opts.profile);
   const checkoutRoot = path.resolve(opts.checkoutPath);
-  const relPaths = uniqueNormalizedPaths(opts.filePaths);
+  const relPaths = await expandSourceFilePaths(checkoutRoot, uniqueNormalizedPaths(opts.filePaths));
   if (relPaths.length === 0) throw new Error("Choose at least one environment file path to save.");
 
   const existing = await readEnvironmentManifest(opts.paths, repo, profile, { allowMissing: true });
@@ -378,6 +378,40 @@ async function checkedSourceFile(source: string, rel: string): Promise<{ mode: n
   if (stat.isSymbolicLink()) throw new Error(`Refusing to save symlink environment file: ${rel}`);
   if (!stat.isFile()) throw new Error(`Environment path is not a file: ${rel}`);
   return { mode: stat.mode, size: stat.size };
+}
+
+async function expandSourceFilePaths(checkoutRoot: string, relPaths: string[]): Promise<string[]> {
+  const files = new Set<string>();
+  for (const rel of relPaths) {
+    const source = safeJoin(checkoutRoot, rel);
+    const stat = await fs.lstat(source);
+    if (stat.isSymbolicLink()) throw new Error(`Refusing to save symlink environment file: ${rel}`);
+    if (stat.isFile()) {
+      files.add(rel);
+      continue;
+    }
+    if (!stat.isDirectory()) throw new Error(`Environment path is not a file or directory: ${rel}`);
+    for (const file of await scanSourceDirectory(checkoutRoot, source)) files.add(file);
+  }
+  return [...files].sort((a, b) => a.localeCompare(b));
+}
+
+async function scanSourceDirectory(checkoutRoot: string, current: string): Promise<string[]> {
+  const files: string[] = [];
+  const entries = await fs.readdir(current, { withFileTypes: true });
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const absolute = path.join(current, entry.name);
+    const rel = path.relative(checkoutRoot, absolute).split(path.sep).join("/");
+    if (entry.isSymbolicLink()) throw new Error(`Refusing to save symlink environment file: ${rel}`);
+    if (entry.isDirectory()) {
+      if (entry.name === ".git") throw new Error(`Environment path cannot target .git: ${rel}`);
+      files.push(...(await scanSourceDirectory(checkoutRoot, absolute)));
+      continue;
+    }
+    if (!entry.isFile()) throw new Error(`Environment path is not a file: ${rel}`);
+    files.push(validateRelativePath(rel));
+  }
+  return files;
 }
 
 async function checkedStoredFile(source: string, rel: string): Promise<{ mode: number; size: number; mtime: Date }> {
